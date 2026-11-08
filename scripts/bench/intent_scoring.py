@@ -115,3 +115,30 @@ def aggregate(rows: list[dict], preds: dict[str, dict]) -> dict[str, Any]:
 
 def score_all(rows: list[dict], preds: dict[str, dict]) -> list[dict]:
     return [score_row(r, preds.get(r["id"])) for r in rows]
+
+
+def category_of_row(row: dict) -> str | None:
+    """API category of the (first) acceptable command of an expect=execute row (derived, not annotated)."""
+
+    if row["gold"]["expect"] != "execute" or not row["gold"]["acceptable"]:
+        return None
+    from intent_catalog import terran_commands
+
+    return terran_commands()[row["gold"]["acceptable"][0].split("#")[0].split("@")[0]]["category"]
+
+
+def by_category(rows: list[dict], preds: dict[str, dict]) -> dict[str, dict]:
+    """Acceptable-accuracy over expect=execute rows per API command category (all tiers pooled)."""
+
+    out: dict[str, dict] = {}
+    for r in rows:
+        cat = category_of_row(r)
+        if cat is None:
+            continue
+        sc = score_row(r, preds.get(r["id"]))
+        b = out.setdefault(cat, {"n": 0, "acceptable": 0})
+        b["n"] += 1
+        b["acceptable"] += int(sc["acceptable"])
+    for b in out.values():
+        b["acceptable_accuracy"] = b["acceptable"] / b["n"]
+    return out

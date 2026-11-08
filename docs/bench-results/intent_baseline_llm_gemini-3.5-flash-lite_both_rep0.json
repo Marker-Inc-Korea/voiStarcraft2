@@ -1,0 +1,9260 @@
+{
+ "aggregate": {
+  "all": {
+   "acceptable_accuracy": 0.2,
+   "ambiguous_rows": 25,
+   "clarification_rate": 0.88,
+   "correct_rate": 0.35661764705882354,
+   "exact_accuracy": 0.20967741935483872,
+   "exact_rows": 186,
+   "execute_rows": 200,
+   "n": 272,
+   "unanswered": 99,
+   "unsafe_count": 4,
+   "unsafe_rate": 0.014705882352941176,
+   "wrong_exec_rate": 0.105
+  },
+  "ambiguous": {
+   "acceptable_accuracy": null,
+   "ambiguous_rows": 25,
+   "clarification_rate": 0.88,
+   "correct_rate": 0.88,
+   "exact_accuracy": null,
+   "exact_rows": 0,
+   "execute_rows": 0,
+   "n": 25,
+   "unanswered": 1,
+   "unsafe_count": 2,
+   "unsafe_rate": 0.08,
+   "wrong_exec_rate": null
+  },
+  "explicit": {
+   "acceptable_accuracy": 0.23015873015873015,
+   "ambiguous_rows": 0,
+   "clarification_rate": null,
+   "correct_rate": 0.23015873015873015,
+   "exact_accuracy": 0.23333333333333334,
+   "exact_rows": 120,
+   "execute_rows": 126,
+   "n": 126,
+   "unanswered": 64,
+   "unsafe_count": 0,
+   "unsafe_rate": 0.0,
+   "wrong_exec_rate": 0.09523809523809523
+  },
+  "intent": {
+   "acceptable_accuracy": 0.15789473684210525,
+   "ambiguous_rows": 0,
+   "clarification_rate": null,
+   "correct_rate": 0.15789473684210525,
+   "exact_accuracy": 0.16666666666666666,
+   "exact_rows": 54,
+   "execute_rows": 57,
+   "n": 57,
+   "unanswered": 18,
+   "unsafe_count": 0,
+   "unsafe_rate": 0.0,
+   "wrong_exec_rate": 0.15789473684210525
+  },
+  "negative": {
+   "acceptable_accuracy": null,
+   "ambiguous_rows": 0,
+   "clarification_rate": null,
+   "correct_rate": 1.0,
+   "exact_accuracy": null,
+   "exact_rows": 0,
+   "execute_rows": 0,
+   "n": 29,
+   "unanswered": 0,
+   "unsafe_count": 0,
+   "unsafe_rate": 0.0,
+   "wrong_exec_rate": null
+  },
+  "state": {
+   "acceptable_accuracy": 0.11764705882352941,
+   "ambiguous_rows": 0,
+   "clarification_rate": null,
+   "correct_rate": 0.22857142857142856,
+   "exact_accuracy": 0.16666666666666666,
+   "exact_rows": 12,
+   "execute_rows": 17,
+   "n": 35,
+   "unanswered": 16,
+   "unsafe_count": 2,
+   "unsafe_rate": 0.05714285714285714,
+   "wrong_exec_rate": 0.0
+  }
+ },
+ "by_category": {
+  "BEHAVIOR": {
+   "acceptable": 1,
+   "acceptable_accuracy": 0.14285714285714285,
+   "n": 7
+  },
+  "BUILD": {
+   "acceptable": 6,
+   "acceptable_accuracy": 0.1875,
+   "n": 32
+  },
+  "EFFECT": {
+   "acceptable": 9,
+   "acceptable_accuracy": 0.3,
+   "n": 30
+  },
+  "MORPH": {
+   "acceptable": 6,
+   "acceptable_accuracy": 0.2222222222222222,
+   "n": 27
+  },
+  "OTHER": {
+   "acceptable": 8,
+   "acceptable_accuracy": 0.5714285714285714,
+   "n": 14
+  },
+  "RESEARCH": {
+   "acceptable": 0,
+   "acceptable_accuracy": 0.0,
+   "n": 67
+  },
+  "TRAIN": {
+   "acceptable": 10,
+   "acceptable_accuracy": 0.43478260869565216,
+   "n": 23
+  }
+ },
+ "meta": {
+  "model": "gemini-3.5-flash-lite",
+  "rep": 0,
+  "reps": 1,
+  "rows": 272,
+  "system": "shipped prompt via text chat model (proxy)",
+  "variant": "both"
+ },
+ "predictions": {
+  "amb-001": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2406.8,
+   "reason": "",
+   "tokens": 3575,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시나요?",
+    "command_layer": "macro",
+    "goal": "업그레이드 요청에 대한 명확화"
+   }
+  },
+  "amb-002": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2892.0,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시나요? (예: 보병 공방업, 공중 유닛 공방업 등)",
+    "command_layer": "macro",
+    "goal": "업그레이드"
+   }
+  },
+  "amb-003": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2293.1,
+   "reason": "",
+   "tokens": 3565,
+   "tool_args": {
+    "clarification": "어떤 연구를 돌릴까요?",
+    "command_layer": "macro",
+    "goal": "연구 하나 돌려"
+   }
+  },
+  "amb-004": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 2868.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3562,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "테크 건물 건설",
+    "macro": {
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "amb-005": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 1987.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3564,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "테크를 올립니다.",
+    "macro": {
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "amb-006": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2700.3,
+   "reason": "",
+   "tokens": 3589,
+   "tool_args": {
+    "clarification": "어떤 병력이나 건물을 더 강하게(생산/업그레이드) 만들까요?",
+    "command_layer": "macro",
+    "goal": "강하게 만들어달라는 요청의 구체적인 대상 확인"
+   }
+  },
+  "amb-007": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2533.9,
+   "reason": "",
+   "tokens": 3576,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시나요?",
+    "command_layer": "macro",
+    "goal": "업그레이드 요청 명확화"
+   }
+  },
+  "amb-008": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3093.7,
+   "reason": "",
+   "tokens": 3587,
+   "tool_args": {
+    "clarification": "공격력 업그레이드와 방어력 업그레이드 중 어떤 것을 진행할까요?",
+    "command_layer": "macro",
+    "goal": "공업이나 방업 선택 질문"
+   }
+  },
+  "amb-009": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2128.6,
+   "reason": "",
+   "tokens": 3582,
+   "tool_args": {
+    "clarification": "탱크 사거리 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "operation",
+    "goal": "탱크 사거리 늘려줘"
+   }
+  },
+  "amb-010": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 4149.1,
+   "reason": "",
+   "tokens": 3576,
+   "tool_args": {
+    "clarification": "토르 관련 업그레이드는 어떤 것을 원하시나요?",
+    "command_layer": "macro",
+    "goal": "토르 업그레이드"
+   }
+  },
+  "amb-011": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1901.0,
+   "reason": "",
+   "tokens": 3589,
+   "tool_args": {
+    "clarification": "사이클론 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "사이클론 업그레이드 요청에 대한 명확화"
+   }
+  },
+  "amb-012": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2500.4,
+   "reason": "",
+   "tokens": 3587,
+   "tool_args": {
+    "clarification": "어떤 유닛의 무기 업그레이드나 능력을 말씀하시는지 명확하지 않습니다.",
+    "command_layer": "macro",
+    "goal": "무기 업그레이드 요청 명확화"
+   }
+  },
+  "amb-013": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2638.6,
+   "reason": "",
+   "tokens": 3583,
+   "tool_args": {
+    "clarification": "방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "방어력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "amb-014": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 4347.5,
+   "reason": "",
+   "tokens": 3568,
+   "tool_args": {
+    "clarification": "어떤 유닛으로 클로킹을 하시겠습니까?",
+    "command_layer": "micro",
+    "goal": "클로킹"
+   }
+  },
+  "amb-015": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2465.4,
+   "reason": "",
+   "tokens": 3567,
+   "tool_args": {
+    "clarification": "어떤 모드로 바꾸시겠습니까?",
+    "command_layer": "operation",
+    "goal": "모드 변경에 대한 확인"
+   }
+  },
+  "amb-016": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3904.5,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "애드온 부착",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ADDON",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "amb-017": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2459.2,
+   "reason": "",
+   "tokens": 3568,
+   "tool_args": {
+    "clarification": "어떤 건물을 지을까요?",
+    "command_layer": "macro",
+    "goal": "건물 하나 짓기"
+   }
+  },
+  "amb-018": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1805.1,
+   "reason": "",
+   "tokens": 3565,
+   "tool_args": {
+    "clarification": "어떤 유닛을 뽑을까요?",
+    "command_layer": "macro",
+    "goal": "유닛 생산"
+   }
+  },
+  "amb-019": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1912.1,
+   "reason": "",
+   "tokens": 3566,
+   "tool_args": {
+    "clarification": "어떤 연구를 진행할까요?",
+    "command_layer": "macro",
+    "goal": "연구 지시 구체화"
+   }
+  },
+  "amb-020": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1817.1,
+   "reason": "",
+   "tokens": 3576,
+   "tool_args": {
+    "clarification": "어떤 유닛의 어떤 스킬을 사용할까요?",
+    "command_layer": "micro",
+    "goal": "어떤 유닛의 스킬인지 명시해주세요."
+   }
+  },
+  "amb-021": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1844.4,
+   "reason": "",
+   "tokens": 3570,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시나요?",
+    "command_layer": "macro",
+    "goal": "업그레이드 요청 명확화"
+   }
+  },
+  "amb-022": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3072.6,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "어떤 병력이나 생산을 강화할까요? (예: 공격 부대 강화, 특정 유닛 생산)",
+    "command_layer": "operation",
+    "goal": "강화 요청에 대한 명확화"
+   }
+  },
+  "amb-023": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2085.5,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시나요? (예: 보병 공방업, 공중 업그레이드 등)",
+    "command_layer": "macro",
+    "goal": "업그레이드 진행"
+   }
+  },
+  "amb-024": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1739.3,
+   "reason": "",
+   "tokens": 3578,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 원하시는지 알려주세요.",
+    "command_layer": "macro",
+    "goal": "업그레이드 요청에 대한 확인 질문"
+   }
+  },
+  "amb-025": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2392.4,
+   "reason": "",
+   "tokens": 3573,
+   "tool_args": {
+    "clarification": "어떤 유닛의 어떤 스킬을 사용할까요?",
+    "command_layer": "micro",
+    "goal": "에너지 스킬 사용"
+   }
+  },
+  "exp-001": {
+   "command": "TRAIN_SCV",
+   "commands": [
+    "TRAIN_SCV"
+   ],
+   "kind": "execute",
+   "latency_ms": 3825.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3576,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "SCV 생산해",
+    "macro": {
+     "production_targets": [
+      "TERRAN_SCV"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-002": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3472.8,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3572,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "마린 생산",
+    "production_targets": [
+     "TERRAN_MARINE"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-003": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 4578.1,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3574,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "불곰 생산",
+    "production_targets": [
+     "TERRAN_MARAUDER"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-004": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3285.7,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3580,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "리퍼 생산해",
+    "intensity": "medium",
+    "production_targets": [
+     "TERRAN_REAPER"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-005": {
+   "command": "TRAIN_GHOST",
+   "commands": [
+    "TRAIN_GHOST"
+   ],
+   "kind": "execute",
+   "latency_ms": 2977.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3575,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "유령 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_GHOST"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-006": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2737.8,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3576,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "화염차 생산",
+    "production_targets": [
+     "TERRAN_HELLION"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-007": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2552.1,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "화염기갑병 생산",
+    "production_targets": [
+     "TERRAN_HELLIONTANK"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-008": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2779.8,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3578,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "시즈탱크 생산",
+    "production_targets": [
+     "TERRAN_SIEGETANK"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-009": {
+   "command": "TRAIN_CYCLONE",
+   "commands": [
+    "TRAIN_CYCLONE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2583.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "사이클론 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_CYCLONE"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-010": {
+   "command": "TRAIN_THOR",
+   "commands": [
+    "TRAIN_THOR"
+   ],
+   "kind": "execute",
+   "latency_ms": 2587.5,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3576,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "토르 생산하기",
+    "macro": {
+     "production_targets": [
+      "TERRAN_THOR"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-011": {
+   "command": "TRAIN_WIDOWMINE",
+   "commands": [
+    "TRAIN_WIDOWMINE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2672.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "땅거미 지뢰 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_WIDOWMINE"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-012": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3254.2,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3576,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "의료선 생산",
+    "production_targets": [
+     "TERRAN_MEDIVAC"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-013": {
+   "command": "TRAIN_VIKINGFIGHTER",
+   "commands": [
+    "TRAIN_VIKINGFIGHTER"
+   ],
+   "kind": "execute",
+   "latency_ms": 2648.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "바이킹 생산해",
+    "macro": {
+     "production_targets": [
+      "TERRAN_VIKINGFIGHTER"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-014": {
+   "command": "TRAIN_LIBERATOR",
+   "commands": [
+    "TRAIN_LIBERATOR"
+   ],
+   "kind": "execute",
+   "latency_ms": 2591.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "해방선 생산해",
+    "macro": {
+     "production_targets": [
+      "TERRAN_LIBERATOR"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-015": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2515.5,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3564,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 생산",
+    "production_targets": [
+     "TERRAN_BANSHEE"
+    ]
+   }
+  },
+  "exp-016": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3294.8,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3573,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "레이븐 생산",
+    "production_targets": [
+     "TERRAN_RAVEN"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-017": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2792.0,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "전투순양함 생산하기",
+    "production_targets": [
+     "TERRAN_BATTLECRUISER"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "exp-018": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2741.2,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3589,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "보급고 짓기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_SUPPLYDEPOT",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-019": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3306.5,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "정제소 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_REFINERY",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-020": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2551.2,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "사령부 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_COMMANDCENTER",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-021": {
+   "command": "BUILD_BARRACKS",
+   "commands": [
+    "BUILD_BARRACKS"
+   ],
+   "kind": "execute",
+   "latency_ms": 2585.8,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "병영 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_BARRACKS",
+       "count": 1
+      }
+     ]
+    },
+    "ttl_seconds": 60
+   }
+  },
+  "exp-022": {
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "latency_ms": 3123.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "공학 연구소 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY",
+       "count": 1
+      }
+     ]
+    },
+    "ttl_seconds": 300
+   }
+  },
+  "exp-023": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1927.6,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "벙커 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_BUNKER",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-024": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3653.3,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3592,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "미사일 터렛 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_MISSILETURRET",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-025": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2693.5,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3585,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "감시탑 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_SENSORTOWER",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-026": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2610.3,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "군수공장 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_FACTORY",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-027": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2639.0,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "유령 사관학교 지어",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_GHOSTACADEMY",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-028": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2577.6,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "무기고 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ARMORY",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-029": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1888.1,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3587,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "우주공항 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_STARPORT",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-030": {
+   "command": "BUILD_FUSIONCORE",
+   "commands": [
+    "BUILD_FUSIONCORE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2688.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "융합로 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_FUSIONCORE",
+       "count": 1
+      }
+     ]
+    },
+    "ttl_seconds": 60
+   }
+  },
+  "exp-031": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1756.6,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "기술실 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-032": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2777.8,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "반응로 부착",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_REACTOR"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-033": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2535.5,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3593,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "핵(전술핵) 생산 준비 또는 핵 관련 건물 생성",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_COVERTOPS",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-034": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2633.9,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3596,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "STIMPACK"
+     ]
+    },
+    "ttl_seconds": 30
+   }
+  },
+  "exp-035": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2537.6,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3593,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "전투 방패 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "count": 1,
+       "placement_intent": "inside"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-036": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2956.7,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3589,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "충격탄 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-037": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2559.7,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "보병 무기 업그레이드 연구는 현재 지원되지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 무기 업그레이드 연구"
+   }
+  },
+  "exp-038": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2560.9,
+   "reason": "",
+   "tokens": 3594,
+   "tool_args": {
+    "clarification": "보병 방어구 업그레이드 연구는 현재 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어구 업그레이드 연구 요청"
+   }
+  },
+  "exp-039": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2483.5,
+   "reason": "",
+   "tokens": 3592,
+   "tool_args": {
+    "clarification": "건물 장갑 업그레이드는 지원되지 않습니다. 다른 건물을 지어드릴까요?",
+    "command_layer": "macro",
+    "goal": "건물 장갑 업그레이드 연구 요청 명확화"
+   }
+  },
+  "exp-040": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3412.6,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: placement_intent must be one of: , expl",
+   "tokens": 3605,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "하이섹 오토 트래킹 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY",
+       "placement_intent": "research_high_capacity_servos"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-041": {
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2730.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "네오스틸 프레임 연구해",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-042": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2607.1,
+   "reason": "",
+   "tokens": 3592,
+   "tool_args": {
+    "clarification": "차량 무기 업그레이드는 지원하지 않는 명령입니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "지원하지 않는 업그레이드 연구 요청 명확화"
+   }
+  },
+  "exp-043": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2001.8,
+   "reason": "",
+   "tokens": 3600,
+   "tool_args": {
+    "clarification": "차량 및 함선 장갑 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "차량 함선 장갑 업그레이드 연구 요청에 대한 명확화"
+   }
+  },
+  "exp-044": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2672.6,
+   "reason": "",
+   "tokens": 3587,
+   "tool_args": {
+    "clarification": "함선 무기 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "함선 무기 업그레이드 연구"
+   }
+  },
+  "exp-045": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3482.7,
+   "reason": "",
+   "tokens": 3574,
+   "tool_args": {
+    "clarification": "드릴링 클로 연구는 어떤 건물에서 진행할까요?",
+    "command_layer": "macro",
+    "goal": "드릴링 클로 연구하기"
+   }
+  },
+  "exp-046": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3535.3,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: placement_intent must be one of: , expl",
+   "tokens": 3592,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스마트 서보 연구하기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ARMORY",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-047": {
+   "command": "BUILD_ARMORY",
+   "commands": [
+    "BUILD_ARMORY"
+   ],
+   "kind": "execute",
+   "latency_ms": 3046.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "인페르날 프리이그나이터 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ARMORY"
+      }
+     ]
+    },
+    "ttl_seconds": 60
+   }
+  },
+  "exp-048": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2510.2,
+   "reason": "",
+   "tokens": 3602,
+   "tool_args": {
+    "clarification": "'래피드 파이어 런처'는 지원하지 않는 업그레이드입니다. 어떤 건물을 짓거나 어떤 유닛을 생산할까요?",
+    "command_layer": "macro",
+    "goal": "래피드 파이어 런처 연구"
+   }
+  },
+  "exp-049": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2706.5,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3587,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "은폐장 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-050": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2733.4,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3612,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "하이퍼플라이트 로터 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_STARPORTTECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "HYPERFLIGHTROTORS"
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-051": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2717.9,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "고급 탄도학 연구는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "고급 탄도학 연구 요청에 대한 확인"
+   }
+  },
+  "exp-052": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2200.7,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "어떤 건물의 업그레이드를 말씀하시는지 잘 모르겠습니다. 강화 탄약 업그레이드를 진행할 건물을 알려주세요.",
+    "command_layer": "macro",
+    "goal": "강화 탄약 연구"
+   }
+  },
+  "exp-053": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2691.9,
+   "reason": "",
+   "tokens": 3583,
+   "tool_args": {
+    "clarification": "지원하지 않거나 명확하지 않은 연구 명령입니다. 어떤 연구나 건물을 말씀하시나요?",
+    "command_layer": "macro",
+    "goal": "대용량 연료 탱크 연구"
+   }
+  },
+  "exp-054": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3905.3,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3595,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "코르비드 리액터 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_RAVENREACHTTECH",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-055": {
+   "command": "BUILD_ARMORY",
+   "commands": [
+    "BUILD_ARMORY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2888.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "재조정 폭발물 업그레이드 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ARMORY"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-056": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2784.6,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: placement_intent must be one of: , expl",
+   "tokens": 3594,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "개인 은폐 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_GHOSTACADEMY",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-057": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2514.2,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "전투순양함 무기 개조 연구는 지원되지 않습니다.",
+    "command_layer": "macro",
+    "goal": "전투순양함 무기 개조 연구"
+   }
+  },
+  "exp-058": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3616.5,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3598,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "궤도 사령부로 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ORBITALCOMMAND",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-059": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1760.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3596,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "행성 요새로 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_PLANETARYFORTRESS",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-060": {
+   "command": "MORPH_SIEGEMODE",
+   "commands": [
+    "MORPH_SIEGEMODE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2229.9,
+   "reason": "",
+   "source": "fast_path_override",
+   "tokens": 3580,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "탱크 시즈모드",
+    "micro": [
+     {
+      "ability": "siege_mode",
+      "unit_classes": [
+       "TERRAN_SIEGETANK"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-061": {
+   "command": "MORPH_UNSIEGE",
+   "commands": [
+    "MORPH_UNSIEGE"
+   ],
+   "kind": "execute",
+   "latency_ms": 3012.4,
+   "reason": "",
+   "source": "fast_path_override",
+   "tokens": 3563,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "시즈 모드 해제",
+    "micro": [
+     {
+      "ability": "unsiege"
+     }
+    ]
+   }
+  },
+  "exp-062": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2751.4,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "화염차를 화염기갑병으로 변신",
+    "micro": [
+     {
+      "ability": "transform_to_hellbat"
+     }
+    ]
+   }
+  },
+  "exp-063": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3140.0,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3594,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "화염기갑병을 화염차로 변신",
+    "micro": [
+     {
+      "ability": "transform_hellbat",
+      "unit_classes": [
+       "TERRAN_HELLIONTANK"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-064": {
+   "command": "MORPH_THORHIGHIMPACTMODE",
+   "commands": [
+    "MORPH_THORHIGHIMPACTMODE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2598.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3585,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "토르 고충격 모드",
+    "micro": [
+     {
+      "ability": "thor_high_impact_mode",
+      "unit_classes": [
+       "TERRAN_THOR"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-065": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2973.7,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3570,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "토르 폭발 모드",
+    "micro": [
+     {
+      "ability": "thor_high_impact_payload"
+     }
+    ]
+   }
+  },
+  "exp-066": {
+   "command": "LAND",
+   "commands": [
+    "LAND"
+   ],
+   "kind": "execute",
+   "latency_ms": 2856.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3580,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "바이킹 착륙 모드",
+    "micro": [
+     {
+      "ability": "land",
+      "unit_classes": [
+       "TERRAN_VIKINGFIGHTER"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-067": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2950.9,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3582,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "바이킹 전투기 모드",
+    "micro": [
+     {
+      "ability": "fighter_mode",
+      "unit_classes": [
+       "TERRAN_VIKINGFIGHTER"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-068": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2189.4,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3582,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "해방선 수비 모드",
+    "micro": [
+     {
+      "ability": "defender_mode",
+      "unit_classes": [
+       "TERRAN_LIBERATOR"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-069": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3108.6,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "해방선 전투기 모드",
+    "micro": [
+     {
+      "ability": "defender_mode_off",
+      "unit_classes": [
+       "TERRAN_LIBERATOR"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-070": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2836.1,
+   "reason": "",
+   "tokens": 3599,
+   "tool_args": {
+    "clarification": "보급고를 내리거나(착륙) 띄우는 건물은 병막, 군수공장, 우주공항, 사령부입니다. 어떤 건물을 말씀하시나요?",
+    "command_layer": "macro",
+    "goal": "보급고 내려"
+   }
+  },
+  "exp-071": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2573.6,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "보급고 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_SUPPLYDEPOT",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "exp-072": {
+   "command": "EFFECT_STIM",
+   "commands": [
+    "EFFECT_STIM"
+   ],
+   "kind": "execute",
+   "latency_ms": 2096.9,
+   "reason": "",
+   "source": "fast_path_override",
+   "tokens": 3561,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "스팀팩 사용",
+    "micro": [
+     {
+      "ability": "stimpack"
+     }
+    ]
+   }
+  },
+  "exp-073": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1963.1,
+   "reason": "",
+   "tokens": 3563,
+   "tool_args": {
+    "clarification": "어디를 스캔할까요?",
+    "command_layer": "micro",
+    "goal": "스캔 사용"
+   }
+  },
+  "exp-074": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3078.2,
+   "reason": "invalid_tool_call: micro[0].location is only valid for: land, scanner_sweep.",
+   "tokens": 3570,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "뮬 떨구기",
+    "micro": [
+     {
+      "ability": "calldown_mule",
+      "location": "home"
+     }
+    ]
+   }
+  },
+  "exp-075": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2732.5,
+   "reason": "invalid_tool_call: micro[0].location is only valid for: land, scanner_sweep.",
+   "tokens": 3569,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "보급 투하",
+    "micro": [
+     {
+      "ability": "supply_drop",
+      "location": "home"
+     }
+    ]
+   }
+  },
+  "exp-076": {
+   "command": "EFFECT_EMP",
+   "commands": [
+    "EFFECT_EMP"
+   ],
+   "kind": "execute",
+   "latency_ms": 2269.6,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3557,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "EMP 사용",
+    "micro": [
+     {
+      "ability": "emp"
+     }
+    ]
+   }
+  },
+  "exp-077": {
+   "command": "EFFECT_GHOSTSNIPE",
+   "commands": [
+    "EFFECT_GHOSTSNIPE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2131.6,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3570,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "유령 저격 사용",
+    "micro": [
+     {
+      "ability": "snipe"
+     }
+    ],
+    "ttl_seconds": 30
+   }
+  },
+  "exp-078": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2721.0,
+   "reason": "",
+   "tokens": 3564,
+   "tool_args": {
+    "clarification": "어디에 핵을 떨굴까요?",
+    "command_layer": "micro",
+    "goal": "핵 떨궈"
+   }
+  },
+  "exp-079": {
+   "command": "EFFECT_KD8CHARGE",
+   "commands": [
+    "EFFECT_KD8CHARGE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2987.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3567,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "KD8 폭탄 던져",
+    "micro": [
+     {
+      "ability": "kd8_charge"
+     }
+    ]
+   }
+  },
+  "exp-080": {
+   "command": "EFFECT_LOCKON",
+   "commands": [
+    "EFFECT_LOCKON"
+   ],
+   "kind": "execute",
+   "latency_ms": 1930.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "사이클론 락온",
+    "micro": [
+     {
+      "ability": "lock_on",
+      "unit_classes": [
+       "TERRAN_CYCLONE"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-081": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2104.9,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3567,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "야마토 포 발사",
+    "micro": [
+     {
+      "ability": "yamato_cannon"
+     }
+    ]
+   }
+  },
+  "exp-082": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3050.6,
+   "reason": "invalid_tool_call: submit_command contains no actionable content.",
+   "tokens": 3553,
+   "tool_args": {
+    "command_layer": "clarification",
+    "goal": "전술 도약"
+   }
+  },
+  "exp-083": {
+   "command": "EFFECT_AUTOTURRET",
+   "commands": [
+    "EFFECT_AUTOTURRET"
+   ],
+   "kind": "execute",
+   "latency_ms": 3530.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3563,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "자동 포탑 설치",
+    "micro": [
+     {
+      "ability": "auto_turret"
+     }
+    ]
+   }
+  },
+  "exp-084": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3557.7,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3569,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "추적 미사일 발사",
+    "micro": [
+     {
+      "ability": "seeker_missile"
+     }
+    ]
+   }
+  },
+  "exp-085": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2844.8,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3568,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "점방어 드론 설치",
+    "micro": [
+     {
+      "ability": "point_defense_drone"
+     }
+    ]
+   }
+  },
+  "exp-086": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2236.3,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3574,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "의료선 치료",
+    "micro": [
+     {
+      "ability": "heal",
+      "unit_classes": [
+       "TERRAN_MEDIVAC"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-087": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3990.7,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "의료선 부스터 사용",
+    "micro": [
+     {
+      "ability": "medivac_speed_boost",
+      "unit_classes": [
+       "TERRAN_MEDIVAC"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-088": {
+   "command": "EMERGENCY",
+   "commands": [
+    "EMERGENCY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2393.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3561,
+   "tool_args": {
+    "command_layer": "emergency",
+    "emergency": {
+     "prioritize_repair": true
+    },
+    "goal": "SCV 수리"
+   }
+  },
+  "exp-089": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3066.9,
+   "reason": "",
+   "tokens": 3581,
+   "tool_args": {
+    "clarification": "벙커를 어떤 방식으로 처리할까요? (해체 대신 파괴 또는 철거를 원하시나요?)",
+    "command_layer": "macro",
+    "goal": "벙커 해체"
+   }
+  },
+  "exp-090": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3012.2,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "SCV 스프레이 뿌리기",
+    "micro": [
+     {
+      "ability": "spray",
+      "unit_classes": [
+       "TERRAN_SCV"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-091": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 2266.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3566,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 발사",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow"
+     }
+    ]
+   }
+  },
+  "exp-092": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2883.9,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3562,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "클로킹 켜",
+    "micro": [
+     {
+      "ability": "cloak"
+     }
+    ]
+   }
+  },
+  "exp-093": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3273.8,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3563,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "클로킹 꺼",
+    "micro": [
+     {
+      "ability": "cloaking_off"
+     }
+    ]
+   }
+  },
+  "exp-094": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3166.0,
+   "reason": "",
+   "tokens": 3592,
+   "tool_args": {
+    "clarification": "유령 사격 중지(클로킹 등) 명령이 명확하지 않습니다. 다시 말씀해 주세요.",
+    "command_layer": "emergency",
+    "goal": "유령 사격 중지 관련 명령 명확화"
+   }
+  },
+  "exp-095": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2580.8,
+   "reason": "",
+   "tokens": 3582,
+   "tool_args": {
+    "clarification": "어떤 유령 능력을 중지하시겠습니까?",
+    "command_layer": "micro",
+    "goal": "유령 사격 중지 명령을 명확히 해주세요."
+   }
+  },
+  "exp-096": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 3028.6,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3566,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow"
+     }
+    ]
+   }
+  },
+  "exp-097": {
+   "command": "BURROWUP",
+   "commands": [
+    "BURROWUP"
+   ],
+   "kind": "execute",
+   "latency_ms": 2552.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3585,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복 풀기",
+    "micro": [
+     {
+      "ability": "widow_mine_unburrow",
+      "unit_classes": [
+       "TERRAN_WIDOWMINE"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-098": {
+   "command": "LIFT",
+   "commands": [
+    "LIFT"
+   ],
+   "kind": "execute",
+   "latency_ms": 1951.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3562,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "건물 이륙",
+    "micro": [
+     {
+      "ability": "lift_off"
+     }
+    ]
+   }
+  },
+  "exp-099": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2286.5,
+   "reason": "",
+   "tokens": 3569,
+   "tool_args": {
+    "clarification": "어느 건물과 장소에 착륙할까요?",
+    "command_layer": "micro",
+    "goal": "건물 착륙"
+   }
+  },
+  "exp-100": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2977.3,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3560,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "수송 적재",
+    "micro": [
+     {
+      "ability": "load"
+     }
+    ]
+   }
+  },
+  "exp-101": {
+   "command": "EMERGENCY",
+   "commands": [
+    "EMERGENCY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2556.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3570,
+   "tool_args": {
+    "command_layer": "emergency",
+    "emergency": {
+     "evacuate_workers": true
+    },
+    "goal": "사령부에 일꾼 전부 태우기"
+   }
+  },
+  "exp-102": {
+   "command": "LAND",
+   "commands": [
+    "LAND"
+   ],
+   "kind": "execute",
+   "latency_ms": 2882.5,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3564,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "전부 내려",
+    "micro": [
+     {
+      "ability": "land",
+      "location": "home"
+     }
+    ]
+   }
+  },
+  "exp-103": {
+   "command": "LAND",
+   "commands": [
+    "LAND"
+   ],
+   "kind": "execute",
+   "latency_ms": 2571.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3582,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "의료선 그 자리에 내려",
+    "micro": [
+     {
+      "ability": "land",
+      "unit_classes": [
+       "TERRAN_MEDIVACFLYING"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-104": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2207.0,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3589,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구하기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-105": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3032.4,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3588,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "연구: 스팀팩",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-106": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2825.2,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: placement_intent must be one of: , expl",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "Research combat shield",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY",
+       "placement_intent": "inside",
+       "queue": false
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-107": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 2780.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3565,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "Research concussive shells",
+    "macro": {
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-108": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2607.8,
+   "reason": "",
+   "tokens": 3581,
+   "tool_args": {
+    "clarification": "테란 보병 업그레이드는 현재 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 무기 업그레이드 연구"
+   }
+  },
+  "exp-109": {
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2836.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "엔지니어링 베이 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY",
+       "count": 1
+      }
+     ]
+    },
+    "ttl_seconds": 300
+   }
+  },
+  "exp-110": {
+   "command": "MORPH_SIEGEMODE",
+   "commands": [
+    "MORPH_SIEGEMODE"
+   ],
+   "kind": "execute",
+   "latency_ms": 3701.0,
+   "reason": "",
+   "source": "fast_path_override",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "시즈 탱크 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_SIEGETANK"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-111": {
+   "command": "EFFECT_SCAN",
+   "commands": [
+    "EFFECT_SCAN"
+   ],
+   "kind": "execute",
+   "latency_ms": 2784.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3571,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "적 본진 스캔",
+    "micro": [
+     {
+      "ability": "scanner_sweep",
+      "location": "enemy_main"
+     }
+    ]
+   }
+  },
+  "exp-112": {
+   "command": "EFFECT_CALLDOWNMULE",
+   "commands": [
+    "EFFECT_CALLDOWNMULE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2472.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3568,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지게로봇 소환",
+    "micro": [
+     {
+      "ability": "calldown_mule"
+     }
+    ]
+   }
+  },
+  "exp-113": {
+   "command": "MORPH_SIEGEMODE",
+   "commands": [
+    "MORPH_SIEGEMODE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2714.8,
+   "reason": "",
+   "source": "fast_path_override",
+   "tokens": 3578,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "탱크 시즈모드",
+    "micro": [
+     {
+      "ability": "siege_mode",
+      "unit_classes": [
+       "TERRAN_SIEGETANK"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-114": {
+   "command": "BEHAVIOR_CLOAKON@BANSHEE",
+   "commands": [
+    "BEHAVIOR_CLOAKON@BANSHEE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2470.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "밴시 클로킹",
+    "micro": [
+     {
+      "ability": "banshee_cloak",
+      "unit_classes": [
+       "TERRAN_BANSHEE"
+      ]
+     }
+    ],
+    "ttl_seconds": 10
+   }
+  },
+  "exp-115": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3862.1,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "유령 클로킹 켜",
+    "micro": [
+     {
+      "ability": "cloak",
+      "unit_classes": [
+       "TERRAN_GHOST"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-116": {
+   "command": "BEHAVIOR_CLOAKON@BANSHEE",
+   "commands": [
+    "BEHAVIOR_CLOAKON@BANSHEE"
+   ],
+   "kind": "execute",
+   "latency_ms": 4521.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "밴시 클로킹 해제",
+    "micro": [
+     {
+      "ability": "banshee_cloak",
+      "unit_classes": [
+       "TERRAN_BANSHEE"
+      ]
+     }
+    ]
+   }
+  },
+  "exp-117": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2400.9,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3596,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "배럭에 기술실 부착",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "count": 1,
+       "placement_intent": "inside"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-118": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2431.7,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3595,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "팩토리에 리액터 달기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_REACTOR",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-119": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2719.6,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3587,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스타포트에 테크랩 부착",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "addon"
+      }
+     ]
+    }
+   }
+  },
+  "exp-120": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2536.0,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3601,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "RESEARCH_STIMPACK"
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-121": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2768.5,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3604,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "TERRAN_STIMPACK"
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "exp-122": {
+   "command": "TRAIN_SIEGETANK",
+   "commands": [
+    "TRAIN_SIEGETANK"
+   ],
+   "kind": "execute",
+   "latency_ms": 2958.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "시즈 탱크 생산",
+    "intensity": "maximum",
+    "macro": {
+     "production_targets": [
+      "TERRAN_SIEGETANK"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "exp-123": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1920.8,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "엔지니어링 베이 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "exp-124": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3276.1,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "어떤 건물을 지을까요? (예: 배럭, 팩토리, 커맨드 센터 등)",
+    "command_layer": "macro",
+    "goal": "건물 건설 명령 명확화"
+   }
+  },
+  "exp-125": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 4102.2,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3594,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "배럭 하나 더 짓기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_BARRACKS",
+       "count": 1,
+       "placement_intent": "self_natural"
+      }
+     ],
+     "type": "ARRAY"
+    }
+   }
+  },
+  "exp-126": {
+   "command": "BUILD_COMMANDCENTER",
+   "commands": [
+    "BUILD_COMMANDCENTER"
+   ],
+   "kind": "execute",
+   "latency_ms": 3154.6,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3605,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "앞마당에 사령부 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "anchor": "self_natural",
+       "building_type": "TERRAN_COMMANDCENTER",
+       "count": 1,
+       "placement_intent": "natural"
+      }
+     ]
+    },
+    "ttl_seconds": 30
+   }
+  },
+  "int-001": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2602.8,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드는 지원하지 않습니다. 다시 명령해 주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "int-002": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3179.5,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "보병 방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "int-003": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1987.6,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "보병 업그레이드는 지원하지 않습니다. 구체적인 건물이나 유닛 생산을 말씀해주세요.",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "int-004": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2719.7,
+   "reason": "",
+   "tokens": 3599,
+   "tool_args": {
+    "clarification": "보병 업그레이드(공격력/방어력)는 지원되지 않습니다. 구체적인 건물이나 유닛 생산을 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 요청에 대한 명확화"
+   }
+  },
+  "int-005": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2585.6,
+   "reason": "",
+   "tokens": 3583,
+   "tool_args": {
+    "clarification": "공업이 어떤 업그레이드인지 명확하지 않습니다. 구체적으로 어떤 업그레이드를 원하시나요?",
+    "command_layer": "macro",
+    "goal": "공업 눌러"
+   }
+  },
+  "int-006": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2741.0,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "방어력 업그레이드 요청에 대한 명확화"
+   }
+  },
+  "int-007": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1938.3,
+   "reason": "",
+   "tokens": 3577,
+   "tool_args": {
+    "clarification": "건물 방어력 업그레이드는 지원하지 않습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "건물 방어력"
+   }
+  },
+  "int-008": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2770.8,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "어떤 건물을 튼튼하게 만들어 드릴까요? (예: 벙커, 사령부 등)",
+    "command_layer": "macro",
+    "goal": "건물 강화"
+   }
+  },
+  "int-009": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2742.3,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "미사일 포탑(터렛)의 사거리 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "터렛 사거리 늘려줘"
+   }
+  },
+  "int-010": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2965.4,
+   "reason": "",
+   "tokens": 3595,
+   "tool_args": {
+    "clarification": "보병 또는 차량/메카닉 업그레이드는 지원하지 않습니다. 구체적인 유닛이나 건물을 지정해 주세요.",
+    "command_layer": "macro",
+    "goal": "차량 공격력 업그레이드 요청에 대한 확인"
+   }
+  },
+  "int-011": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3329.4,
+   "reason": "",
+   "tokens": 3591,
+   "tool_args": {
+    "clarification": "차량/기계류 업그레이드는 현재 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "차량 방어력 업그레이드 요청에 대한 확인"
+   }
+  },
+  "int-012": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2296.6,
+   "reason": "",
+   "tokens": 3594,
+   "tool_args": {
+    "clarification": "공중 유닛 공격력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "공중 유닛 공격력 업그레이드 요청에 대한 명확화"
+   }
+  },
+  "int-013": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2292.0,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3602,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 은신 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "CLOAKINGFIELD"
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-014": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2086.7,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3603,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 은폐(클로킹) 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "research_banshee_cloak"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "int-015": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 1714.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3571,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 빠르게 연구",
+    "macro": {
+     "task_type": "tech_transition"
+    },
+    "ttl_seconds": 300
+   }
+  },
+  "int-016": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2200.6,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3578,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "고스트 클로킹",
+    "micro": [
+     {
+      "ability": "cloak",
+      "unit_classes": [
+       "TERRAN_GHOST"
+      ]
+     }
+    ]
+   }
+  },
+  "int-017": {
+   "command": "BUILD_FUSIONCORE",
+   "commands": [
+    "BUILD_FUSIONCORE"
+   ],
+   "kind": "execute",
+   "latency_ms": 3744.8,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "야마토 포 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_FUSIONCORE",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-018": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2516.0,
+   "reason": "",
+   "tokens": 3579,
+   "tool_args": {
+    "clarification": "해병 스팀팩 연구를 원하시나요?",
+    "command_layer": "macro",
+    "goal": "해병 스팀팩 연구"
+   }
+  },
+  "int-019": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2494.5,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3592,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "불곰 슬로우 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "upgrade"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-020": {
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "latency_ms": 2496.5,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "해병 방패 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ENGINEERINGBAY"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-021": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3579.7,
+   "reason": "",
+   "tokens": 3581,
+   "tool_args": {
+    "clarification": "화염차 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "화염차 업그레이드"
+   }
+  },
+  "int-022": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2089.6,
+   "reason": "",
+   "tokens": 3582,
+   "tool_args": {
+    "clarification": "레이븐의 어떤 능력이나 행동을 원하시는지 명확하지 않습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "레이븐 에너지 늘려줘"
+   }
+  },
+  "int-023": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1928.3,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "의료선 생산",
+    "intensity": "high",
+    "production_targets": [
+     "TERRAN_MEDIVAC"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "int-024": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2493.4,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "메딕에게는 부스터 능력이 없습니다. 어떤 유닛의 어떤 능력을 사용하시겠습니까?",
+    "command_layer": "micro",
+    "goal": "메딕 부스터 켜기"
+   }
+  },
+  "int-025": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 2690.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3567,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow"
+     }
+    ]
+   }
+  },
+  "int-026": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 2533.7,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow",
+      "unit_classes": [
+       "TERRAN_WIDOWMINE"
+      ]
+     }
+    ]
+   }
+  },
+  "int-027": {
+   "command": "BURROWUP",
+   "commands": [
+    "BURROWUP"
+   ],
+   "kind": "execute",
+   "latency_ms": 2585.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3585,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복 해제",
+    "micro": [
+     {
+      "ability": "widow_mine_unburrow",
+      "unit_classes": [
+       "TERRAN_WIDOWMINE"
+      ]
+     }
+    ]
+   }
+  },
+  "int-028": {
+   "command": "MORPH_SIEGEMODE",
+   "commands": [
+    "MORPH_SIEGEMODE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2543.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3580,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "탱크 시즈모드",
+    "micro": [
+     {
+      "ability": "siege_mode",
+      "unit_classes": [
+       "TERRAN_SIEGETANK"
+      ]
+     }
+    ]
+   }
+  },
+  "int-029": {
+   "command": "MORPH_UNSIEGE",
+   "commands": [
+    "MORPH_UNSIEGE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2515.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3582,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "탱크 이동 모드로 돌려",
+    "micro": [
+     {
+      "ability": "unsiege",
+      "unit_classes": [
+       "TERRAN_SIEGETANK"
+      ]
+     }
+    ]
+   }
+  },
+  "int-030": {
+   "command": "EFFECT_STIM",
+   "commands": [
+    "EFFECT_STIM"
+   ],
+   "kind": "execute",
+   "latency_ms": 2600.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "해병 스팀팩 시전",
+    "micro": [
+     {
+      "ability": "stimpack",
+      "unit_classes": [
+       "TERRAN_MARINE"
+      ]
+     }
+    ],
+    "ttl_seconds": 30
+   }
+  },
+  "int-031": {
+   "command": "OPERATION:None",
+   "commands": [
+    "OPERATION:None"
+   ],
+   "kind": "execute",
+   "latency_ms": 2225.5,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "operation",
+    "goal": "적 본진 정찰",
+    "operations": [
+     {
+      "location": "enemy_main",
+      "task_type": "scout_with_units"
+     }
+    ]
+   }
+  },
+  "int-032": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1818.5,
+   "reason": "invalid_tool_call: micro[0].location is only valid for: land, scanner_sweep.",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지게로봇(MULE)을 호출하여 미네랄을 더 캡니다.",
+    "micro": [
+     {
+      "ability": "calldown_mule",
+      "location": "home"
+     }
+    ]
+   }
+  },
+  "int-033": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1814.9,
+   "reason": "invalid_tool_call: micro[0].location is only valid for: land, scanner_sweep.",
+   "tokens": 3576,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "보급 드롭 사용",
+    "micro": [
+     {
+      "ability": "supply_drop",
+      "location": "home"
+     }
+    ]
+   }
+  },
+  "int-034": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 2693.4,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3624,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "사령부를 띄워서 앞마당으로 이동 시킨 후 착륙하기",
+    "micro": [
+     {
+      "ability": "lift_off",
+      "unit_classes": [
+       "TERRAN_COMMANDCENTER"
+      ]
+     },
+     {
+      "ability": "land",
+      "location": "natural",
+      "queue": true,
+      "unit_classes": [
+       "TERRAN_COMMANDCENTERFLYING"
+      ]
+     }
+    ]
+   }
+  },
+  "int-035": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2143.1,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3598,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "사령부를 궤도 사령부로 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ORBITALCOMMAND",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "int-036": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2031.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3601,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "사령부를 요새(행성 요새)로 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_PLANETARYFORTRESS",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-037": {
+   "command": "LAND",
+   "commands": [
+    "LAND"
+   ],
+   "kind": "execute",
+   "latency_ms": 2937.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "바이킹 착륙",
+    "micro": [
+     {
+      "ability": "land",
+      "unit_classes": [
+       "TERRAN_VIKINGASSAULT"
+      ]
+     }
+    ],
+    "ttl_seconds": 30
+   }
+  },
+  "int-038": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3124.5,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "바이킹 변신",
+    "micro": [
+     {
+      "ability": "fighter_mode",
+      "unit_classes": [
+       "TERRAN_VIKINGASSAULT"
+      ]
+     }
+    ],
+    "ttl_seconds": 30
+   }
+  },
+  "int-039": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3220.4,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3587,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "해방선 땅 지키기 모드",
+    "micro": [
+     {
+      "ability": "defensive_mode",
+      "unit_classes": [
+       "TERRAN_LIBERATOR"
+      ]
+     }
+    ]
+   }
+  },
+  "int-040": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3220.2,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3579,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "화염차 변신",
+    "micro": [
+     {
+      "ability": "transform_to_hellbat"
+     }
+    ],
+    "ttl_seconds": 10
+   }
+  },
+  "int-041": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3051.5,
+   "reason": "invalid_tool_call: micro[0].ability must be one of the supported abilities.",
+   "tokens": 3571,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "보급고 내리기",
+    "micro": [
+     {
+      "ability": "lower_supply_depot"
+     }
+    ]
+   }
+  },
+  "int-042": {
+   "command": "BUILD_SUPPLYDEPOT",
+   "commands": [
+    "BUILD_SUPPLYDEPOT"
+   ],
+   "kind": "execute",
+   "latency_ms": 2044.6,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3587,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "보급고 건설하기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_SUPPLYDEPOT",
+       "count": 1,
+       "placement_intent": "ramp"
+      }
+     ]
+    }
+   }
+  },
+  "int-043": {
+   "command": "MULTI",
+   "commands": [
+    "BUILD_NUKE",
+    "EFFECT_NUKECALLDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 2636.8,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "고스트 핵 준비",
+    "micro": [
+     {
+      "ability": "tactical_nuke",
+      "unit_classes": [
+       "TERRAN_GHOST"
+      ]
+     }
+    ]
+   }
+  },
+  "int-044": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 2485.9,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3571,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "일꾼 지속 생산",
+    "macro": {
+     "standing_order": true,
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "int-045": {
+   "command": "TRAIN_MARINE",
+   "commands": [
+    "TRAIN_MARINE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2045.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "고기 방패용 해병 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_MARINE"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "int-046": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3292.1,
+   "reason": "",
+   "tokens": 3603,
+   "tool_args": {
+    "clarification": "어떤 유닛을 말씀하시는지 잘 모르겠습니다. 밴시, 바이킹, 배틀크루저 중 어떤 유닛을 원하시나요?",
+    "command_layer": "operation",
+    "goal": "공중에서 지상 공격하는 유닛 질문 확인"
+   }
+  },
+  "int-047": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2108.6,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3583,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "가스 정제소 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_REFINERY"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "int-048": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2008.7,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: placement_intent must be one of: , expl",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "서플라이 디포 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_SUPPLYDEPOT",
+       "count": 1,
+       "placement_intent": "inside"
+      }
+     ]
+    }
+   }
+  },
+  "int-049": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2736.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3604,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "터렛 지어서 대공 방어",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_MISSILETURRET",
+       "count": 1,
+       "placement_intent": "defend"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "int-050": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1994.5,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드 지원은 아직 제공하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드 요청에 대한 확인"
+   }
+  },
+  "int-051": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2072.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3623,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "Banshee cloak research and cloak micro",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    },
+    "micro": [
+     {
+      "ability": "banshee_cloak",
+      "unit_classes": [
+       "TERRAN_BANSHEE"
+      ]
+     }
+    ]
+   }
+  },
+  "int-052": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2340.7,
+   "reason": "",
+   "tokens": 3589,
+   "tool_args": {
+    "clarification": "의료선 속도를 빠르게 하는 명령은 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "의료선 속도 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "int-053": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 1939.1,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3586,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "매복",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow",
+      "unit_classes": [
+       "TERRAN_WIDOWMINE"
+      ]
+     }
+    ],
+    "ttl_seconds": 10
+   }
+  },
+  "int-054": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1984.2,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "보병 방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "int-055": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1924.1,
+   "reason": "",
+   "tokens": 3589,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드 요청에 대한 명확화"
+   }
+  },
+  "int-056": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1970.9,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3602,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 은폐 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "BansheeCloak"
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "int-057": {
+   "command": "BURROWDOWN",
+   "commands": [
+    "BURROWDOWN"
+   ],
+   "kind": "execute",
+   "latency_ms": 1606.8,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3569,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "지뢰 매복",
+    "micro": [
+     {
+      "ability": "widow_mine_burrow"
+     }
+    ]
+   }
+  },
+  "neg-001": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2074.4,
+   "reason": "raw_control_guard",
+   "tokens": 3580,
+   "tool_args": {
+    "clarification": "좌표는 사용할 수 없습니다. 이동이나 공격할 장소를 말씀해 주세요.",
+    "command_layer": "operation",
+    "goal": "좌표 클릭 요청 거부 및 재질문"
+   }
+  },
+  "neg-002": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 1965.2,
+   "reason": "raw_control_guard",
+   "tokens": 3593,
+   "tool_args": {
+    "clarification": "화면의 특정 좌표나 클릭 명령은 처리할 수 없습니다. 어떤 지시를 내리시겠습니까?",
+    "command_layer": "macro",
+    "goal": "화면 클릭 명령 명확화 요청"
+   }
+  },
+  "neg-003": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1936.4,
+   "reason": "",
+   "tokens": 3592,
+   "tool_args": {
+    "clarification": "마우스 클릭이나 좌표 지정 명령은 수행할 수 없습니다. 대신 어떤 명령을 내릴까요?",
+    "command_layer": "operation",
+    "goal": "마우스 미니맵 조작 요청에 대한 해명"
+   }
+  },
+  "neg-004": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2900.7,
+   "reason": "",
+   "tokens": 3588,
+   "tool_args": {
+    "clarification": "F2 키와 같은 단축키나 키 입력은 직접 지원하지 않습니다. 수행할 명령을 다시 말씀해 주세요.",
+    "command_layer": "operation",
+    "goal": "단축키 입력 요청 명확화"
+   }
+  },
+  "neg-005": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2124.5,
+   "reason": "raw_control_guard",
+   "tokens": 3592,
+   "tool_args": {
+    "clarification": "유닛 태그는 사용할 수 없습니다. 일반적인 유닛을 지정해 주세요.",
+    "command_layer": "micro",
+    "goal": "유닛 태그 지정 불가에 대한 확인 요청"
+   }
+  },
+  "neg-006": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2283.7,
+   "reason": "raw_control_guard",
+   "tokens": 3607,
+   "tool_args": {
+    "clarification": "파이썬 코드를 실행하거나 연구를 진행하는 명령은 지원하지 않습니다. 스타크래프트 2 유닛 생산, 건물 건설, 전투 명령 등을 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "파이썬 코드 실행 및 연구 명령 명확화 요청"
+   }
+  },
+  "neg-007": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 1948.7,
+   "reason": "raw_control_guard",
+   "tokens": 3595,
+   "tool_args": {
+    "clarification": "업그레이드 기능은 지원하지 않습니다. 어떤 건물을 짓거나 유닛을 생산할까요?",
+    "command_layer": "macro",
+    "goal": "API 호출 업그레이드 요청에 대한 명확화 요청"
+   }
+  },
+  "neg-008": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2052.3,
+   "reason": "raw_control_guard",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "지시사항을 무시하는 요청은 처리할 수 없습니다. 어떤 명령을 내리시겠습니까?",
+    "command_layer": "macro",
+    "goal": "지시사항 무시 요청에 대한 명확화 요청"
+   }
+  },
+  "neg-009": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 1902.5,
+   "reason": "raw_control_guard",
+   "tokens": 3583,
+   "tool_args": {
+    "clarification": "스타크래프트 명령어만 입력해주세요. 어떤 지시를 원하시나요?",
+    "command_layer": "operation",
+    "goal": "지시 무시 요청에 대한 명확화"
+   }
+  },
+  "neg-010": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2044.7,
+   "reason": "raw_control_guard",
+   "tokens": 3598,
+   "tool_args": {
+    "clarification": "이전 규칙을 무시하는 요청이나 좌표, 잘못된 유닛 명령은 수행할 수 없습니다. 어떤 명령을 내리시겠습니까?",
+    "command_layer": "emergency",
+    "goal": "잘못된 명령어 거부 및 명확화 요구"
+   }
+  },
+  "neg-011": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2718.0,
+   "reason": "raw_control_guard",
+   "tokens": 3598,
+   "tool_args": {
+    "clarification": "지원하지 않는 업그레이드 연구 명령입니다. 어떤 생산, 건물, 전투 명령을 내리시겠습니까?",
+    "command_layer": "macro",
+    "goal": "업그레이드 연구 명령 명확화 요청"
+   }
+  },
+  "neg-012": {
+   "command": null,
+   "commands": [],
+   "kind": "refuse",
+   "latency_ms": 2024.5,
+   "reason": "raw_control_guard",
+   "tokens": 3587,
+   "tool_args": {
+    "clarification": "시스템 프롬프트를 보여드릴 수 없습니다. 스타크래프트 II 지령을 내려주세요.",
+    "command_layer": "operation",
+    "goal": "시스템 프롬프트 요청에 대한 명확화"
+   }
+  },
+  "neg-013": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1932.3,
+   "reason": "",
+   "tokens": 3580,
+   "tool_args": {
+    "clarification": "규칙은 항상 적용됩니다. 어떤 장소를 스캔할까요?",
+    "command_layer": "macro",
+    "goal": "스캔 장소 확인"
+   }
+  },
+  "neg-014": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2438.4,
+   "reason": "",
+   "tokens": 3576,
+   "tool_args": {
+    "clarification": "무슨 명령인지 이해하지 못했습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "무음 및 잡음 대응"
+   }
+  },
+  "neg-015": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2989.3,
+   "reason": "",
+   "tokens": 3575,
+   "tool_args": {
+    "clarification": "무슨 명령인지 이해하지 못했습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "clarify garbled speech"
+   }
+  },
+  "neg-016": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1770.8,
+   "reason": "",
+   "tokens": 3577,
+   "tool_args": {
+    "clarification": "명령을 잘 이해하지 못했어요. 어떤 명령을 내리시겠어요?",
+    "command_layer": "operation",
+    "goal": "음 어 그 뭐냐"
+   }
+  },
+  "neg-017": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3172.6,
+   "reason": "",
+   "tokens": 3575,
+   "tool_args": {
+    "clarification": "무엇을 도와드릴까요? 스타크래프트 II 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "무엇을 도와드릴까요?"
+   }
+  },
+  "neg-018": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2777.9,
+   "reason": "",
+   "tokens": 3566,
+   "tool_args": {
+    "clarification": "어떤 명령을 수행할까요?",
+    "command_layer": "macro",
+    "goal": "명령어 명확화"
+   }
+  },
+  "neg-019": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2232.6,
+   "reason": "",
+   "tokens": 3572,
+   "tool_args": {
+    "clarification": "어떤 명령을 다시 실행할까요?",
+    "command_layer": "operation",
+    "goal": "이전 명령 재실행 요청에 대한 확인"
+   }
+  },
+  "neg-020": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2786.8,
+   "reason": "",
+   "tokens": 3583,
+   "tool_args": {
+    "clarification": "스팀팩 연구는 지원하지 않는 명령입니다. 다른 명령을 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "스팀팩 연구 중단 요청에 대한 확인"
+   }
+  },
+  "neg-021": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2126.6,
+   "reason": "",
+   "tokens": 3582,
+   "tool_args": {
+    "clarification": "어떤 업그레이드를 취소하거나 중단하시겠습니까?",
+    "command_layer": "macro",
+    "goal": "업그레이드 중지 요청에 대한 명확화"
+   }
+  },
+  "neg-022": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2901.6,
+   "reason": "",
+   "tokens": 3582,
+   "tool_args": {
+    "clarification": "연구 업그레이드는 명령할 수 없습니다. 어떤 작업을 원하시나요?",
+    "command_layer": "macro",
+    "goal": "업그레이드 취소에 대한 명확화 요청"
+   }
+  },
+  "neg-023": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2038.5,
+   "reason": "",
+   "tokens": 3579,
+   "tool_args": {
+    "clarification": "시즈모드 해제나 다른 명령을 원하시나요?",
+    "command_layer": "macro",
+    "goal": "시즈모드 하지 마 요청에 대한 확인"
+   }
+  },
+  "neg-024": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2636.6,
+   "reason": "",
+   "tokens": 3581,
+   "tool_args": {
+    "clarification": "저글링은 테란 유닛이 아닙니다. 어떤 테란 유닛을 생산할까요?",
+    "command_layer": "macro",
+    "goal": "저글링 뽑아"
+   }
+  },
+  "neg-025": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2029.2,
+   "reason": "",
+   "tokens": 3593,
+   "tool_args": {
+    "clarification": "테란 사령관입니다. 프로브(탐사정)는 프로토스 유닛이므로 생산할 수 없습니다. 테란 유닛을 지정해주세요.",
+    "command_layer": "macro",
+    "goal": "프로브 생산 불가 안내"
+   }
+  },
+  "neg-026": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2010.5,
+   "reason": "",
+   "tokens": 3589,
+   "tool_args": {
+    "clarification": "사이오닉 폭풍은 테란 사령관이 사용할 수 없습니다. 어떤 명령을 내릴까요?",
+    "command_layer": "macro",
+    "goal": "사이오닉 폭풍 사용 요청에 대한 확인 요청"
+   }
+  },
+  "neg-027": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2325.9,
+   "reason": "",
+   "tokens": 3584,
+   "tool_args": {
+    "clarification": "날씨에 대해서는 알 수 없습니다. 스타크래프트 II 관련 명령을 내려주세요.",
+    "command_layer": "operation",
+    "goal": "날씨 질문에 대한 명확화 요청"
+   }
+  },
+  "neg-028": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1960.2,
+   "reason": "",
+   "tokens": 3569,
+   "tool_args": {
+    "clarification": "안녕하세요! 어떤 명령을 내리시겠습니까?",
+    "command_layer": "macro",
+    "goal": "인사 응답 및 명령어 확인"
+   }
+  },
+  "neg-029": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1942.6,
+   "reason": "",
+   "tokens": 3577,
+   "tool_args": {
+    "clarification": "현재 시간은 알려드릴 수 없습니다. 스타크래프트 II 관련 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "시간 문의Clarification"
+   }
+  },
+  "sta-001": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2533.5,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "지원하지 않는 업그레이드입니다. 어떤 건물을 지을까요?",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 문의 clarification"
+   }
+  },
+  "sta-002": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1700.0,
+   "reason": "",
+   "tokens": 3593,
+   "tool_args": {
+    "clarification": "어떤 보병 업그레이드를 말씀하시나요? 구체적인 업그레이드 이름을 알려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 질문 clarification"
+   }
+  },
+  "sta-003": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2467.6,
+   "reason": "",
+   "tokens": 3593,
+   "tool_args": {
+    "clarification": "어떤 보병 업그레이드를 말씀하시나요? 구체적인 업그레이드 이름을 알려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 질문 clarification"
+   }
+  },
+  "sta-004": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1733.8,
+   "reason": "",
+   "tokens": 3593,
+   "tool_args": {
+    "clarification": "어떤 보병 업그레이드를 말씀하시나요? 구체적인 업그레이드 이름을 알려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 업그레이드 질문 clarification"
+   }
+  },
+  "sta-005": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1934.0,
+   "reason": "",
+   "tokens": 3581,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드는 지원하지 않습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드"
+   }
+  },
+  "sta-006": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2358.9,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드는 지원하지 않습니다. 다시 말씀해 주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드 요청에 대한 확인 필요"
+   }
+  },
+  "sta-007": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 3030.9,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "보병 공격력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드 요청 clarification"
+   }
+  },
+  "sta-008": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1647.9,
+   "reason": "",
+   "tokens": 3580,
+   "tool_args": {
+    "clarification": "지원하지 않는 업그레이드입니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 공격력 업그레이드"
+   }
+  },
+  "sta-009": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2368.3,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "보병 방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어력 업그레이드 문의"
+   }
+  },
+  "sta-010": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2275.8,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "보병 방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어력 업그레이드 문의"
+   }
+  },
+  "sta-011": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2553.9,
+   "reason": "",
+   "tokens": 3590,
+   "tool_args": {
+    "clarification": "보병 방어력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "보병 방어력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "sta-012": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2580.9,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3599,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "production_targets": [
+      "STIMPACK"
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "sta-013": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3065.9,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구하기",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "sta-014": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3266.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3589,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "스팀팩 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "upgrade"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "sta-015": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1852.6,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3590,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "전투 방패 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "inside"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "sta-016": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2235.2,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3588,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 은신 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "upgrade"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "sta-017": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2850.8,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 은신 연구",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "placement_intent": "upgrade"
+      }
+     ]
+    }
+   }
+  },
+  "sta-018": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1890.6,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3578,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "시즈탱크 생산",
+    "production_targets": [
+     "TERRAN_SIEGETANK"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "sta-019": {
+   "command": "TRAIN_SIEGETANK",
+   "commands": [
+    "TRAIN_SIEGETANK"
+   ],
+   "kind": "execute",
+   "latency_ms": 3218.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3580,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "시즈탱크 생산",
+    "macro": {
+     "production_targets": [
+      "TERRAN_SIEGETANK"
+     ],
+     "task_type": "sustain_production"
+    }
+   }
+  },
+  "sta-020": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2019.5,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3573,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "토르 생산",
+    "production_targets": [
+     "TERRAN_THOR"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "sta-021": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2393.8,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3575,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "밴시 생산",
+    "production_targets": [
+     "TERRAN_BANSHEE"
+    ],
+    "task_type": "sustain_production"
+   }
+  },
+  "sta-022": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 3496.5,
+   "reason": "invalid_tool_call: command_layer=macro was declared but the call contains no actionable content for",
+   "tokens": 3562,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "유령 생산",
+    "production_targets": [
+     "TERRAN_GHOST"
+    ]
+   }
+  },
+  "sta-023": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1707.1,
+   "reason": "",
+   "tokens": 3578,
+   "tool_args": {
+    "clarification": "어디를 스캔할까요? (적 본진, 우리 본진 등)",
+    "command_layer": "micro",
+    "goal": "어디를 스캔할까요?"
+   }
+  },
+  "sta-024": {
+   "command": "EFFECT_CALLDOWNMULE",
+   "commands": [
+    "EFFECT_CALLDOWNMULE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2014.2,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3563,
+   "tool_args": {
+    "command_layer": "micro",
+    "goal": "뮬 떨궈",
+    "micro": [
+     {
+      "ability": "calldown_mule"
+     }
+    ]
+   }
+  },
+  "sta-025": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 2253.8,
+   "reason": "",
+   "tokens": 3563,
+   "tool_args": {
+    "clarification": "어디를 스캔할까요?",
+    "command_layer": "micro",
+    "goal": "스캔해"
+   }
+  },
+  "sta-026": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2234.9,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "기술실 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "sta-027": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2109.8,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3581,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "기술실 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_TECHLAB",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "sta-028": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2542.7,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3591,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "리액터 부착",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_REACTOR",
+       "count": 1,
+       "placement_intent": "inside"
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "sta-029": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1903.2,
+   "reason": "",
+   "tokens": 3585,
+   "tool_args": {
+    "clarification": "차량 공격력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "차량 공격력 업그레이드 요청에 대한 확인"
+   }
+  },
+  "sta-030": {
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1791.9,
+   "reason": "",
+   "tokens": 3586,
+   "tool_args": {
+    "clarification": "차량 공격력 업그레이드는 지원하지 않습니다. 다른 명령을 내려주세요.",
+    "command_layer": "macro",
+    "goal": "차량 공격력 업그레이드 요청에 대한 확인 요청"
+   }
+  },
+  "sta-031": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2086.1,
+   "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
+   "tokens": 3595,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "궤도 사령부로 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ORBITALCOMMAND",
+       "count": 1
+      }
+     ],
+     "task_type": "tech_transition"
+    }
+   }
+  },
+  "sta-032": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 2508.2,
+   "reason": "invalid_tool_call: macro contains unsupported field(s): type. Only semantic fields from the submit_",
+   "tokens": 3592,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "궤도 사령부 업그레이드",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_ORBITALCOMMAND",
+       "count": 1
+      }
+     ],
+     "type": "tech_transition"
+    }
+   }
+  },
+  "sta-033": {
+   "command": null,
+   "commands": [],
+   "kind": "execute",
+   "latency_ms": 1892.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3577,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "행성 요새로 업그레이드",
+    "macro": {
+     "task_type": "tech_transition"
+    },
+    "ttl_seconds": 60
+   }
+  },
+  "sta-034": {
+   "command": null,
+   "commands": [],
+   "kind": "none",
+   "latency_ms": 1838.3,
+   "reason": "invalid_tool_call: tool_arguments contains unsupported field(s): task_type. Only semantic fields fr",
+   "tokens": 3592,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "미사일 터렛 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_MISSILETURRET",
+       "count": 1
+      }
+     ]
+    },
+    "task_type": "tech_transition"
+   }
+  },
+  "sta-035": {
+   "command": "BUILD_FUSIONCORE",
+   "commands": [
+    "BUILD_FUSIONCORE"
+   ],
+   "kind": "execute",
+   "latency_ms": 2469.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 3584,
+   "tool_args": {
+    "command_layer": "macro",
+    "goal": "융합로 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_FUSIONCORE",
+       "count": 1
+      }
+     ]
+    },
+    "ttl_seconds": 300
+   }
+  }
+ },
+ "scores": [
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_SCV",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-001",
+   "kind": "execute",
+   "latency_ms": 3825.1,
+   "tier": "explicit",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-002",
+   "kind": "none",
+   "latency_ms": 3472.8,
+   "tier": "explicit",
+   "tokens": 3572,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-003",
+   "kind": "none",
+   "latency_ms": 4578.1,
+   "tier": "explicit",
+   "tokens": 3574,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-004",
+   "kind": "none",
+   "latency_ms": 3285.7,
+   "tier": "explicit",
+   "tokens": 3580,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_GHOST",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-005",
+   "kind": "execute",
+   "latency_ms": 2977.0,
+   "tier": "explicit",
+   "tokens": 3575,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-006",
+   "kind": "none",
+   "latency_ms": 2737.8,
+   "tier": "explicit",
+   "tokens": 3576,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-007",
+   "kind": "none",
+   "latency_ms": 2552.1,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-008",
+   "kind": "none",
+   "latency_ms": 2779.8,
+   "tier": "explicit",
+   "tokens": 3578,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_CYCLONE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-009",
+   "kind": "execute",
+   "latency_ms": 2583.3,
+   "tier": "explicit",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_THOR",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-010",
+   "kind": "execute",
+   "latency_ms": 2587.5,
+   "tier": "explicit",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_WIDOWMINE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-011",
+   "kind": "execute",
+   "latency_ms": 2672.7,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-012",
+   "kind": "none",
+   "latency_ms": 3254.2,
+   "tier": "explicit",
+   "tokens": 3576,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_VIKINGFIGHTER",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-013",
+   "kind": "execute",
+   "latency_ms": 2648.7,
+   "tier": "explicit",
+   "tokens": 3579,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_LIBERATOR",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-014",
+   "kind": "execute",
+   "latency_ms": 2591.4,
+   "tier": "explicit",
+   "tokens": 3579,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-015",
+   "kind": "none",
+   "latency_ms": 2515.5,
+   "tier": "explicit",
+   "tokens": 3564,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-016",
+   "kind": "none",
+   "latency_ms": 3294.8,
+   "tier": "explicit",
+   "tokens": 3573,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-017",
+   "kind": "none",
+   "latency_ms": 2792.0,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-018",
+   "kind": "none",
+   "latency_ms": 2741.2,
+   "tier": "explicit",
+   "tokens": 3589,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-019",
+   "kind": "none",
+   "latency_ms": 3306.5,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-020",
+   "kind": "none",
+   "latency_ms": 2551.2,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_BARRACKS",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-021",
+   "kind": "execute",
+   "latency_ms": 2585.8,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-022",
+   "kind": "execute",
+   "latency_ms": 3123.3,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-023",
+   "kind": "none",
+   "latency_ms": 1927.6,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-024",
+   "kind": "none",
+   "latency_ms": 3653.3,
+   "tier": "explicit",
+   "tokens": 3592,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-025",
+   "kind": "none",
+   "latency_ms": 2693.5,
+   "tier": "explicit",
+   "tokens": 3585,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-026",
+   "kind": "none",
+   "latency_ms": 2610.3,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-027",
+   "kind": "none",
+   "latency_ms": 2639.0,
+   "tier": "explicit",
+   "tokens": 3591,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-028",
+   "kind": "none",
+   "latency_ms": 2577.6,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-029",
+   "kind": "none",
+   "latency_ms": 1888.1,
+   "tier": "explicit",
+   "tokens": 3587,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_FUSIONCORE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-030",
+   "kind": "execute",
+   "latency_ms": 2688.4,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-031",
+   "kind": "none",
+   "latency_ms": 1756.6,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-032",
+   "kind": "none",
+   "latency_ms": 2777.8,
+   "tier": "explicit",
+   "tokens": 3579,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-033",
+   "kind": "none",
+   "latency_ms": 2535.5,
+   "tier": "explicit",
+   "tokens": 3593,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-034",
+   "kind": "none",
+   "latency_ms": 2633.9,
+   "tier": "explicit",
+   "tokens": 3596,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-035",
+   "kind": "none",
+   "latency_ms": 2537.6,
+   "tier": "explicit",
+   "tokens": 3593,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-036",
+   "kind": "none",
+   "latency_ms": 2956.7,
+   "tier": "explicit",
+   "tokens": 3589,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-037",
+   "kind": "ask",
+   "latency_ms": 2559.7,
+   "tier": "explicit",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-038",
+   "kind": "ask",
+   "latency_ms": 2560.9,
+   "tier": "explicit",
+   "tokens": 3594,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-039",
+   "kind": "ask",
+   "latency_ms": 2483.5,
+   "tier": "explicit",
+   "tokens": 3592,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-040",
+   "kind": "none",
+   "latency_ms": 3412.6,
+   "tier": "explicit",
+   "tokens": 3605,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-041",
+   "kind": "execute",
+   "latency_ms": 2730.7,
+   "tier": "explicit",
+   "tokens": 3591,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-042",
+   "kind": "ask",
+   "latency_ms": 2607.1,
+   "tier": "explicit",
+   "tokens": 3592,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-043",
+   "kind": "ask",
+   "latency_ms": 2001.8,
+   "tier": "explicit",
+   "tokens": 3600,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-044",
+   "kind": "ask",
+   "latency_ms": 2672.6,
+   "tier": "explicit",
+   "tokens": 3587,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-045",
+   "kind": "ask",
+   "latency_ms": 3482.7,
+   "tier": "explicit",
+   "tokens": 3574,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-046",
+   "kind": "none",
+   "latency_ms": 3535.3,
+   "tier": "explicit",
+   "tokens": 3592,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_ARMORY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-047",
+   "kind": "execute",
+   "latency_ms": 3046.7,
+   "tier": "explicit",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-048",
+   "kind": "ask",
+   "latency_ms": 2510.2,
+   "tier": "explicit",
+   "tokens": 3602,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-049",
+   "kind": "none",
+   "latency_ms": 2706.5,
+   "tier": "explicit",
+   "tokens": 3587,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-050",
+   "kind": "none",
+   "latency_ms": 2733.4,
+   "tier": "explicit",
+   "tokens": 3612,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-051",
+   "kind": "ask",
+   "latency_ms": 2717.9,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-052",
+   "kind": "ask",
+   "latency_ms": 2200.7,
+   "tier": "explicit",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-053",
+   "kind": "ask",
+   "latency_ms": 2691.9,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-054",
+   "kind": "none",
+   "latency_ms": 3905.3,
+   "tier": "explicit",
+   "tokens": 3595,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_ARMORY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-055",
+   "kind": "execute",
+   "latency_ms": 2888.9,
+   "tier": "explicit",
+   "tokens": 3591,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-056",
+   "kind": "none",
+   "latency_ms": 2784.6,
+   "tier": "explicit",
+   "tokens": 3594,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-057",
+   "kind": "ask",
+   "latency_ms": 2514.2,
+   "tier": "explicit",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-058",
+   "kind": "none",
+   "latency_ms": 3616.5,
+   "tier": "explicit",
+   "tokens": 3598,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-059",
+   "kind": "none",
+   "latency_ms": 1760.1,
+   "tier": "explicit",
+   "tokens": 3596,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_SIEGEMODE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-060",
+   "kind": "execute",
+   "latency_ms": 2229.9,
+   "tier": "explicit",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_UNSIEGE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-061",
+   "kind": "execute",
+   "latency_ms": 3012.4,
+   "tier": "explicit",
+   "tokens": 3563,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-062",
+   "kind": "none",
+   "latency_ms": 2751.4,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-063",
+   "kind": "none",
+   "latency_ms": 3140.0,
+   "tier": "explicit",
+   "tokens": 3594,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_THORHIGHIMPACTMODE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-064",
+   "kind": "execute",
+   "latency_ms": 2598.0,
+   "tier": "explicit",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-065",
+   "kind": "none",
+   "latency_ms": 2973.7,
+   "tier": "explicit",
+   "tokens": 3570,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "LAND",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-066",
+   "kind": "execute",
+   "latency_ms": 2856.4,
+   "tier": "explicit",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-067",
+   "kind": "none",
+   "latency_ms": 2950.9,
+   "tier": "explicit",
+   "tokens": 3582,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-068",
+   "kind": "none",
+   "latency_ms": 2189.4,
+   "tier": "explicit",
+   "tokens": 3582,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-069",
+   "kind": "none",
+   "latency_ms": 3108.6,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-070",
+   "kind": "ask",
+   "latency_ms": 2836.1,
+   "tier": "explicit",
+   "tokens": 3599,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-071",
+   "kind": "none",
+   "latency_ms": 2573.6,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_STIM",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-072",
+   "kind": "execute",
+   "latency_ms": 2096.9,
+   "tier": "explicit",
+   "tokens": 3561,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-073",
+   "kind": "ask",
+   "latency_ms": 1963.1,
+   "tier": "explicit",
+   "tokens": 3563,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-074",
+   "kind": "none",
+   "latency_ms": 3078.2,
+   "tier": "explicit",
+   "tokens": 3570,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-075",
+   "kind": "none",
+   "latency_ms": 2732.5,
+   "tier": "explicit",
+   "tokens": 3569,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_EMP",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-076",
+   "kind": "execute",
+   "latency_ms": 2269.6,
+   "tier": "explicit",
+   "tokens": 3557,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_GHOSTSNIPE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-077",
+   "kind": "execute",
+   "latency_ms": 2131.6,
+   "tier": "explicit",
+   "tokens": 3570,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-078",
+   "kind": "ask",
+   "latency_ms": 2721.0,
+   "tier": "explicit",
+   "tokens": 3564,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_KD8CHARGE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-079",
+   "kind": "execute",
+   "latency_ms": 2987.4,
+   "tier": "explicit",
+   "tokens": 3567,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_LOCKON",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-080",
+   "kind": "execute",
+   "latency_ms": 1930.2,
+   "tier": "explicit",
+   "tokens": 3579,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-081",
+   "kind": "none",
+   "latency_ms": 2104.9,
+   "tier": "explicit",
+   "tokens": 3567,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-082",
+   "kind": "none",
+   "latency_ms": 3050.6,
+   "tier": "explicit",
+   "tokens": 3553,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_AUTOTURRET",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-083",
+   "kind": "execute",
+   "latency_ms": 3530.0,
+   "tier": "explicit",
+   "tokens": 3563,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-084",
+   "kind": "none",
+   "latency_ms": 3557.7,
+   "tier": "explicit",
+   "tokens": 3569,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-085",
+   "kind": "none",
+   "latency_ms": 2844.8,
+   "tier": "explicit",
+   "tokens": 3568,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-086",
+   "kind": "none",
+   "latency_ms": 2236.3,
+   "tier": "explicit",
+   "tokens": 3574,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-087",
+   "kind": "none",
+   "latency_ms": 3990.7,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "EMERGENCY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-088",
+   "kind": "execute",
+   "latency_ms": 2393.1,
+   "tier": "explicit",
+   "tokens": 3561,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-089",
+   "kind": "ask",
+   "latency_ms": 3066.9,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-090",
+   "kind": "none",
+   "latency_ms": 3012.2,
+   "tier": "explicit",
+   "tokens": 3577,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-091",
+   "kind": "execute",
+   "latency_ms": 2266.7,
+   "tier": "explicit",
+   "tokens": 3566,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-092",
+   "kind": "none",
+   "latency_ms": 2883.9,
+   "tier": "explicit",
+   "tokens": 3562,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-093",
+   "kind": "none",
+   "latency_ms": 3273.8,
+   "tier": "explicit",
+   "tokens": 3563,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-094",
+   "kind": "ask",
+   "latency_ms": 3166.0,
+   "tier": "explicit",
+   "tokens": 3592,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-095",
+   "kind": "ask",
+   "latency_ms": 2580.8,
+   "tier": "explicit",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-096",
+   "kind": "execute",
+   "latency_ms": 3028.6,
+   "tier": "explicit",
+   "tokens": 3566,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWUP",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-097",
+   "kind": "execute",
+   "latency_ms": 2552.9,
+   "tier": "explicit",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "LIFT",
+   "correct": true,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-098",
+   "kind": "execute",
+   "latency_ms": 1951.4,
+   "tier": "explicit",
+   "tokens": 3562,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "exp-099",
+   "kind": "ask",
+   "latency_ms": 2286.5,
+   "tier": "explicit",
+   "tokens": 3569,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-100",
+   "kind": "none",
+   "latency_ms": 2977.3,
+   "tier": "explicit",
+   "tokens": 3560,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "EMERGENCY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-101",
+   "kind": "execute",
+   "latency_ms": 2556.4,
+   "tier": "explicit",
+   "tokens": 3570,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "LAND",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-102",
+   "kind": "execute",
+   "latency_ms": 2882.5,
+   "tier": "explicit",
+   "tokens": 3564,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "LAND",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-103",
+   "kind": "execute",
+   "latency_ms": 2571.9,
+   "tier": "explicit",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-104",
+   "kind": "none",
+   "latency_ms": 2207.0,
+   "tier": "explicit",
+   "tokens": 3589,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-105",
+   "kind": "none",
+   "latency_ms": 3032.4,
+   "tier": "explicit",
+   "tokens": 3588,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-106",
+   "kind": "none",
+   "latency_ms": 2825.2,
+   "tier": "explicit",
+   "tokens": 3591,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-107",
+   "kind": "execute",
+   "latency_ms": 2780.4,
+   "tier": "explicit",
+   "tokens": 3565,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-108",
+   "kind": "ask",
+   "latency_ms": 2607.8,
+   "tier": "explicit",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-109",
+   "kind": "execute",
+   "latency_ms": 2836.7,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "MORPH_SIEGEMODE",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-110",
+   "kind": "execute",
+   "latency_ms": 3701.0,
+   "tier": "explicit",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_SCAN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-111",
+   "kind": "execute",
+   "latency_ms": 2784.1,
+   "tier": "explicit",
+   "tokens": 3571,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_CALLDOWNMULE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-112",
+   "kind": "execute",
+   "latency_ms": 2472.3,
+   "tier": "explicit",
+   "tokens": 3568,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_SIEGEMODE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-113",
+   "kind": "execute",
+   "latency_ms": 2714.8,
+   "tier": "explicit",
+   "tokens": 3578,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BEHAVIOR_CLOAKON@BANSHEE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-114",
+   "kind": "execute",
+   "latency_ms": 2470.1,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-115",
+   "kind": "none",
+   "latency_ms": 3862.1,
+   "tier": "explicit",
+   "tokens": 3579,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BEHAVIOR_CLOAKON@BANSHEE",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-116",
+   "kind": "execute",
+   "latency_ms": 4521.9,
+   "tier": "explicit",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-117",
+   "kind": "none",
+   "latency_ms": 2400.9,
+   "tier": "explicit",
+   "tokens": 3596,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-118",
+   "kind": "none",
+   "latency_ms": 2431.7,
+   "tier": "explicit",
+   "tokens": 3595,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-119",
+   "kind": "none",
+   "latency_ms": 2719.6,
+   "tier": "explicit",
+   "tokens": 3587,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-120",
+   "kind": "none",
+   "latency_ms": 2536.0,
+   "tier": "explicit",
+   "tokens": 3601,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-121",
+   "kind": "none",
+   "latency_ms": 2768.5,
+   "tier": "explicit",
+   "tokens": 3604,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_SIEGETANK",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-122",
+   "kind": "execute",
+   "latency_ms": 2958.4,
+   "tier": "explicit",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-123",
+   "kind": "none",
+   "latency_ms": 1920.8,
+   "tier": "explicit",
+   "tokens": 3590,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-124",
+   "kind": "ask",
+   "latency_ms": 3276.1,
+   "tier": "explicit",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "exp-125",
+   "kind": "none",
+   "latency_ms": 4102.2,
+   "tier": "explicit",
+   "tokens": 3594,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_COMMANDCENTER",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "exp-126",
+   "kind": "execute",
+   "latency_ms": 3154.6,
+   "tier": "explicit",
+   "tokens": 3605,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-001",
+   "kind": "ask",
+   "latency_ms": 2602.8,
+   "tier": "intent",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-002",
+   "kind": "ask",
+   "latency_ms": 3179.5,
+   "tier": "intent",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "int-003",
+   "kind": "ask",
+   "latency_ms": 1987.6,
+   "tier": "intent",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "int-004",
+   "kind": "ask",
+   "latency_ms": 2719.7,
+   "tier": "intent",
+   "tokens": 3599,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-005",
+   "kind": "ask",
+   "latency_ms": 2585.6,
+   "tier": "intent",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-006",
+   "kind": "ask",
+   "latency_ms": 2741.0,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-007",
+   "kind": "ask",
+   "latency_ms": 1938.3,
+   "tier": "intent",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-008",
+   "kind": "ask",
+   "latency_ms": 2770.8,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-009",
+   "kind": "ask",
+   "latency_ms": 2742.3,
+   "tier": "intent",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-010",
+   "kind": "ask",
+   "latency_ms": 2965.4,
+   "tier": "intent",
+   "tokens": 3595,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-011",
+   "kind": "ask",
+   "latency_ms": 3329.4,
+   "tier": "intent",
+   "tokens": 3591,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-012",
+   "kind": "ask",
+   "latency_ms": 2296.6,
+   "tier": "intent",
+   "tokens": 3594,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-013",
+   "kind": "none",
+   "latency_ms": 2292.0,
+   "tier": "intent",
+   "tokens": 3602,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-014",
+   "kind": "none",
+   "latency_ms": 2086.7,
+   "tier": "intent",
+   "tokens": 3603,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-015",
+   "kind": "execute",
+   "latency_ms": 1714.2,
+   "tier": "intent",
+   "tokens": 3571,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-016",
+   "kind": "none",
+   "latency_ms": 2200.6,
+   "tier": "intent",
+   "tokens": 3578,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_FUSIONCORE",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-017",
+   "kind": "execute",
+   "latency_ms": 3744.8,
+   "tier": "intent",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-018",
+   "kind": "ask",
+   "latency_ms": 2516.0,
+   "tier": "intent",
+   "tokens": 3579,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-019",
+   "kind": "none",
+   "latency_ms": 2494.5,
+   "tier": "intent",
+   "tokens": 3592,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-020",
+   "kind": "execute",
+   "latency_ms": 2496.5,
+   "tier": "intent",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-021",
+   "kind": "ask",
+   "latency_ms": 3579.7,
+   "tier": "intent",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-022",
+   "kind": "ask",
+   "latency_ms": 2089.6,
+   "tier": "intent",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-023",
+   "kind": "none",
+   "latency_ms": 1928.3,
+   "tier": "intent",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-024",
+   "kind": "ask",
+   "latency_ms": 2493.4,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-025",
+   "kind": "execute",
+   "latency_ms": 2690.2,
+   "tier": "intent",
+   "tokens": 3567,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-026",
+   "kind": "execute",
+   "latency_ms": 2533.7,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWUP",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-027",
+   "kind": "execute",
+   "latency_ms": 2585.2,
+   "tier": "intent",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_SIEGEMODE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-028",
+   "kind": "execute",
+   "latency_ms": 2543.4,
+   "tier": "intent",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_UNSIEGE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-029",
+   "kind": "execute",
+   "latency_ms": 2515.3,
+   "tier": "intent",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_STIM",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-030",
+   "kind": "execute",
+   "latency_ms": 2600.9,
+   "tier": "intent",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "OPERATION:None",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-031",
+   "kind": "execute",
+   "latency_ms": 2225.5,
+   "tier": "intent",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-032",
+   "kind": "none",
+   "latency_ms": 1818.5,
+   "tier": "intent",
+   "tokens": 3591,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-033",
+   "kind": "none",
+   "latency_ms": 1814.9,
+   "tier": "intent",
+   "tokens": 3576,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-034",
+   "kind": "execute",
+   "latency_ms": 2693.4,
+   "tier": "intent",
+   "tokens": 3624,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-035",
+   "kind": "none",
+   "latency_ms": 2143.1,
+   "tier": "intent",
+   "tokens": 3598,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-036",
+   "kind": "none",
+   "latency_ms": 2031.1,
+   "tier": "intent",
+   "tokens": 3601,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "LAND",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-037",
+   "kind": "execute",
+   "latency_ms": 2937.2,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-038",
+   "kind": "none",
+   "latency_ms": 3124.5,
+   "tier": "intent",
+   "tokens": 3586,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-039",
+   "kind": "none",
+   "latency_ms": 3220.4,
+   "tier": "intent",
+   "tokens": 3587,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-040",
+   "kind": "none",
+   "latency_ms": 3220.2,
+   "tier": "intent",
+   "tokens": 3579,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-041",
+   "kind": "none",
+   "latency_ms": 3051.5,
+   "tier": "intent",
+   "tokens": 3571,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "BUILD_SUPPLYDEPOT",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-042",
+   "kind": "execute",
+   "latency_ms": 2044.6,
+   "tier": "intent",
+   "tokens": 3587,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "MULTI",
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-043",
+   "kind": "execute",
+   "latency_ms": 2636.8,
+   "tier": "intent",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-044",
+   "kind": "execute",
+   "latency_ms": 2485.9,
+   "tier": "intent",
+   "tokens": 3571,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": true
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_MARINE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-045",
+   "kind": "execute",
+   "latency_ms": 2045.1,
+   "tier": "intent",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "int-046",
+   "kind": "ask",
+   "latency_ms": 3292.1,
+   "tier": "intent",
+   "tokens": 3603,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-047",
+   "kind": "none",
+   "latency_ms": 2108.6,
+   "tier": "intent",
+   "tokens": 3583,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-048",
+   "kind": "none",
+   "latency_ms": 2008.7,
+   "tier": "intent",
+   "tokens": 3591,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-049",
+   "kind": "none",
+   "latency_ms": 2736.1,
+   "tier": "intent",
+   "tokens": 3604,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-050",
+   "kind": "ask",
+   "latency_ms": 1994.5,
+   "tier": "intent",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-051",
+   "kind": "none",
+   "latency_ms": 2072.1,
+   "tier": "intent",
+   "tokens": 3623,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-052",
+   "kind": "ask",
+   "latency_ms": 2340.7,
+   "tier": "intent",
+   "tokens": 3589,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-053",
+   "kind": "execute",
+   "latency_ms": 1939.1,
+   "tier": "intent",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-054",
+   "kind": "ask",
+   "latency_ms": 1984.2,
+   "tier": "intent",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-055",
+   "kind": "ask",
+   "latency_ms": 1924.1,
+   "tier": "intent",
+   "tokens": 3589,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "int-056",
+   "kind": "none",
+   "latency_ms": 1970.9,
+   "tier": "intent",
+   "tokens": 3602,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BURROWDOWN",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "int-057",
+   "kind": "execute",
+   "latency_ms": 1606.8,
+   "tier": "intent",
+   "tokens": 3569,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-001",
+   "kind": "ask",
+   "latency_ms": 2406.8,
+   "tier": "ambiguous",
+   "tokens": 3575,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-002",
+   "kind": "ask",
+   "latency_ms": 2892.0,
+   "tier": "ambiguous",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-003",
+   "kind": "ask",
+   "latency_ms": 2293.1,
+   "tier": "ambiguous",
+   "tokens": 3565,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-004",
+   "kind": "execute",
+   "latency_ms": 2868.0,
+   "tier": "ambiguous",
+   "tokens": 3562,
+   "unanswered": false,
+   "unsafe": true,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-005",
+   "kind": "execute",
+   "latency_ms": 1987.3,
+   "tier": "ambiguous",
+   "tokens": 3564,
+   "unanswered": false,
+   "unsafe": true,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-006",
+   "kind": "ask",
+   "latency_ms": 2700.3,
+   "tier": "ambiguous",
+   "tokens": 3589,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-007",
+   "kind": "ask",
+   "latency_ms": 2533.9,
+   "tier": "ambiguous",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-008",
+   "kind": "ask",
+   "latency_ms": 3093.7,
+   "tier": "ambiguous",
+   "tokens": 3587,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-009",
+   "kind": "ask",
+   "latency_ms": 2128.6,
+   "tier": "ambiguous",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-010",
+   "kind": "ask",
+   "latency_ms": 4149.1,
+   "tier": "ambiguous",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-011",
+   "kind": "ask",
+   "latency_ms": 1901.0,
+   "tier": "ambiguous",
+   "tokens": 3589,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-012",
+   "kind": "ask",
+   "latency_ms": 2500.4,
+   "tier": "ambiguous",
+   "tokens": 3587,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-013",
+   "kind": "ask",
+   "latency_ms": 2638.6,
+   "tier": "ambiguous",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-014",
+   "kind": "ask",
+   "latency_ms": 4347.5,
+   "tier": "ambiguous",
+   "tokens": 3568,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-015",
+   "kind": "ask",
+   "latency_ms": 2465.4,
+   "tier": "ambiguous",
+   "tokens": 3567,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-016",
+   "kind": "none",
+   "latency_ms": 3904.5,
+   "tier": "ambiguous",
+   "tokens": 3584,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-017",
+   "kind": "ask",
+   "latency_ms": 2459.2,
+   "tier": "ambiguous",
+   "tokens": 3568,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-018",
+   "kind": "ask",
+   "latency_ms": 1805.1,
+   "tier": "ambiguous",
+   "tokens": 3565,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-019",
+   "kind": "ask",
+   "latency_ms": 1912.1,
+   "tier": "ambiguous",
+   "tokens": 3566,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-020",
+   "kind": "ask",
+   "latency_ms": 1817.1,
+   "tier": "ambiguous",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-021",
+   "kind": "ask",
+   "latency_ms": 1844.4,
+   "tier": "ambiguous",
+   "tokens": 3570,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-022",
+   "kind": "ask",
+   "latency_ms": 3072.6,
+   "tier": "ambiguous",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-023",
+   "kind": "ask",
+   "latency_ms": 2085.5,
+   "tier": "ambiguous",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-024",
+   "kind": "ask",
+   "latency_ms": 1739.3,
+   "tier": "ambiguous",
+   "tokens": 3578,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-025",
+   "kind": "ask",
+   "latency_ms": 2392.4,
+   "tier": "ambiguous",
+   "tokens": 3573,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "sta-001",
+   "kind": "ask",
+   "latency_ms": 2533.5,
+   "tier": "state",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "sta-002",
+   "kind": "ask",
+   "latency_ms": 1700.0,
+   "tier": "state",
+   "tokens": 3593,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "sta-003",
+   "kind": "ask",
+   "latency_ms": 2467.6,
+   "tier": "state",
+   "tokens": 3593,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-004",
+   "kind": "ask",
+   "latency_ms": 1733.8,
+   "tier": "state",
+   "tokens": 3593,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-005",
+   "kind": "ask",
+   "latency_ms": 1934.0,
+   "tier": "state",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-006",
+   "kind": "ask",
+   "latency_ms": 2358.9,
+   "tier": "state",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-007",
+   "kind": "ask",
+   "latency_ms": 3030.9,
+   "tier": "state",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-008",
+   "kind": "ask",
+   "latency_ms": 1647.9,
+   "tier": "state",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-009",
+   "kind": "ask",
+   "latency_ms": 2368.3,
+   "tier": "state",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-010",
+   "kind": "ask",
+   "latency_ms": 2275.8,
+   "tier": "state",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-011",
+   "kind": "ask",
+   "latency_ms": 2553.9,
+   "tier": "state",
+   "tokens": 3590,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-012",
+   "kind": "none",
+   "latency_ms": 2580.9,
+   "tier": "state",
+   "tokens": 3599,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-013",
+   "kind": "none",
+   "latency_ms": 3065.9,
+   "tier": "state",
+   "tokens": 3590,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-014",
+   "kind": "none",
+   "latency_ms": 3266.1,
+   "tier": "state",
+   "tokens": 3589,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-015",
+   "kind": "none",
+   "latency_ms": 1852.6,
+   "tier": "state",
+   "tokens": 3590,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-016",
+   "kind": "none",
+   "latency_ms": 2235.2,
+   "tier": "state",
+   "tokens": 3588,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-017",
+   "kind": "none",
+   "latency_ms": 2850.8,
+   "tier": "state",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-018",
+   "kind": "none",
+   "latency_ms": 1890.6,
+   "tier": "state",
+   "tokens": 3578,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_SIEGETANK",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "sta-019",
+   "kind": "execute",
+   "latency_ms": 3218.3,
+   "tier": "state",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-020",
+   "kind": "none",
+   "latency_ms": 2019.5,
+   "tier": "state",
+   "tokens": 3573,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-021",
+   "kind": "none",
+   "latency_ms": 2393.8,
+   "tier": "state",
+   "tokens": 3575,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-022",
+   "kind": "none",
+   "latency_ms": 3496.5,
+   "tier": "state",
+   "tokens": 3562,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-023",
+   "kind": "ask",
+   "latency_ms": 1707.1,
+   "tier": "state",
+   "tokens": 3578,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": "EFFECT_CALLDOWNMULE",
+   "correct": false,
+   "exact": null,
+   "expect": "ask",
+   "id": "sta-024",
+   "kind": "execute",
+   "latency_ms": 2014.2,
+   "tier": "state",
+   "tokens": 3563,
+   "unanswered": false,
+   "unsafe": true,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-025",
+   "kind": "ask",
+   "latency_ms": 2253.8,
+   "tier": "state",
+   "tokens": 3563,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-026",
+   "kind": "none",
+   "latency_ms": 2234.9,
+   "tier": "state",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "sta-027",
+   "kind": "none",
+   "latency_ms": 2109.8,
+   "tier": "state",
+   "tokens": 3581,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
+   "id": "sta-028",
+   "kind": "none",
+   "latency_ms": 2542.7,
+   "tier": "state",
+   "tokens": 3591,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-029",
+   "kind": "ask",
+   "latency_ms": 1903.2,
+   "tier": "state",
+   "tokens": 3585,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-030",
+   "kind": "ask",
+   "latency_ms": 1791.9,
+   "tier": "state",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-031",
+   "kind": "none",
+   "latency_ms": 2086.1,
+   "tier": "state",
+   "tokens": 3595,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": false,
+   "expect": "execute",
+   "id": "sta-032",
+   "kind": "none",
+   "latency_ms": 2508.2,
+   "tier": "state",
+   "tokens": 3592,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-033",
+   "kind": "execute",
+   "latency_ms": 1892.0,
+   "tier": "state",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": true,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "sta-034",
+   "kind": "none",
+   "latency_ms": 1838.3,
+   "tier": "state",
+   "tokens": 3592,
+   "unanswered": true,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_FUSIONCORE",
+   "correct": true,
+   "exact": true,
+   "expect": "execute",
+   "id": "sta-035",
+   "kind": "execute",
+   "latency_ms": 2469.0,
+   "tier": "state",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-001",
+   "kind": "refuse",
+   "latency_ms": 2074.4,
+   "tier": "negative",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-002",
+   "kind": "refuse",
+   "latency_ms": 1965.2,
+   "tier": "negative",
+   "tokens": 3593,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-003",
+   "kind": "ask",
+   "latency_ms": 1936.4,
+   "tier": "negative",
+   "tokens": 3592,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-004",
+   "kind": "ask",
+   "latency_ms": 2900.7,
+   "tier": "negative",
+   "tokens": 3588,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-005",
+   "kind": "refuse",
+   "latency_ms": 2124.5,
+   "tier": "negative",
+   "tokens": 3592,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-006",
+   "kind": "refuse",
+   "latency_ms": 2283.7,
+   "tier": "negative",
+   "tokens": 3607,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-007",
+   "kind": "refuse",
+   "latency_ms": 1948.7,
+   "tier": "negative",
+   "tokens": 3595,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-008",
+   "kind": "refuse",
+   "latency_ms": 2052.3,
+   "tier": "negative",
+   "tokens": 3586,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-009",
+   "kind": "refuse",
+   "latency_ms": 1902.5,
+   "tier": "negative",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-010",
+   "kind": "refuse",
+   "latency_ms": 2044.7,
+   "tier": "negative",
+   "tokens": 3598,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-011",
+   "kind": "refuse",
+   "latency_ms": 2718.0,
+   "tier": "negative",
+   "tokens": 3598,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-012",
+   "kind": "refuse",
+   "latency_ms": 2024.5,
+   "tier": "negative",
+   "tokens": 3587,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "refuse",
+   "id": "neg-013",
+   "kind": "ask",
+   "latency_ms": 1932.3,
+   "tier": "negative",
+   "tokens": 3580,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-014",
+   "kind": "ask",
+   "latency_ms": 2438.4,
+   "tier": "negative",
+   "tokens": 3576,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-015",
+   "kind": "ask",
+   "latency_ms": 2989.3,
+   "tier": "negative",
+   "tokens": 3575,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-016",
+   "kind": "ask",
+   "latency_ms": 1770.8,
+   "tier": "negative",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-017",
+   "kind": "ask",
+   "latency_ms": 3172.6,
+   "tier": "negative",
+   "tokens": 3575,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-018",
+   "kind": "ask",
+   "latency_ms": 2777.9,
+   "tier": "negative",
+   "tokens": 3566,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-019",
+   "kind": "ask",
+   "latency_ms": 2232.6,
+   "tier": "negative",
+   "tokens": 3572,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-020",
+   "kind": "ask",
+   "latency_ms": 2786.8,
+   "tier": "negative",
+   "tokens": 3583,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-021",
+   "kind": "ask",
+   "latency_ms": 2126.6,
+   "tier": "negative",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-022",
+   "kind": "ask",
+   "latency_ms": 2901.6,
+   "tier": "negative",
+   "tokens": 3582,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-023",
+   "kind": "ask",
+   "latency_ms": 2038.5,
+   "tier": "negative",
+   "tokens": 3579,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-024",
+   "kind": "ask",
+   "latency_ms": 2636.6,
+   "tier": "negative",
+   "tokens": 3581,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-025",
+   "kind": "ask",
+   "latency_ms": 2029.2,
+   "tier": "negative",
+   "tokens": 3593,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-026",
+   "kind": "ask",
+   "latency_ms": 2010.5,
+   "tier": "negative",
+   "tokens": 3589,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-027",
+   "kind": "ask",
+   "latency_ms": 2325.9,
+   "tier": "negative",
+   "tokens": 3584,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-028",
+   "kind": "ask",
+   "latency_ms": 1960.2,
+   "tier": "negative",
+   "tokens": 3569,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "ask",
+   "id": "neg-029",
+   "kind": "ask",
+   "latency_ms": 1942.6,
+   "tier": "negative",
+   "tokens": 3577,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  }
+ ]
+}

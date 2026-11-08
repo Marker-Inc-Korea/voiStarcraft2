@@ -107,3 +107,16 @@ def test_latency_fields_are_carried_not_aggregated_into_claims():
 def test_missing_prediction_counts_as_unanswered():
     agg = S.aggregate([row("execute", ["A"], exact="A", tier="explicit")], {})
     assert agg["all"]["unanswered"] == 1 and agg["all"]["correct_rate"] == 0.0
+
+
+def test_by_category_pools_execute_rows_by_api_category():
+    rows = [
+        row("execute", ["RESEARCH_STIMPACK"], exact="RESEARCH_STIMPACK", rid="1"),
+        row("execute", ["RESEARCH_COMBATSHIELD"], exact="RESEARCH_COMBATSHIELD", rid="2"),
+        row("execute", ["TRAIN_MARINE"], exact="TRAIN_MARINE", rid="3"),
+        row("ask", [], tier="ambiguous", rid="4"),
+    ]
+    preds = {"1": ex("RESEARCH_STIMPACK"), "2": ASK, "3": ex("TRAIN_MARINE")}
+    cats = S.by_category(rows, preds)
+    assert cats["RESEARCH"] == {"n": 2, "acceptable": 1, "acceptable_accuracy": 0.5}
+    assert cats["TRAIN"]["acceptable_accuracy"] == 1.0 and set(cats) == {"RESEARCH", "TRAIN"}
