@@ -253,7 +253,7 @@ def test_infantry_upgrade_names_the_right_family(phrase, winner) -> None:
     from starcraft_commander import sc2_catalog as catalog
 
     scored = catalog.search_scored(phrase)
-    assert scored[0][0].id == winner and scored[0][1] > scored[1][1], scored
+    assert scored[0][0].id == winner and (len(scored) == 1 or scored[0][1] > scored[1][1]), scored
 
 
 def test_bare_infantry_upgrade_stays_a_tie() -> None:
@@ -273,7 +273,7 @@ WIRE_PHRASES = [
     ("래피드 파이어 런처 연구해", "research_rapidfirelaunchers"), ("train a siege tank", "train_siegetank"),
     ("cloak the banshees", "behavior_cloakon"), ("banshee cloak", "behavior_cloakon"),
     ("보병 공격력 한 단계 더", "research_terraninfantryweapons"), ("궤도 사령부로 올려", "morph_orbitalcommand"),
-    ("화염기갑병을 화염차로 변신", "morph_hellion"),
+    ("화염기갑병을 화염차로 변신", "morph_hellion"), ("뮬 떨궈", "effect_calldownmule"), ("뮬 써줘", "effect_calldownmule"),
 ]
 
 
