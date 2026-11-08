@@ -25,6 +25,7 @@ def _world():
     ebay = bot.add_unit(U.ENGINEERINGBAY, orders=(AbilityId.ENGINEERINGBAYRESEARCH_TERRANINFANTRYWEAPONSLEVEL1,))
     orbital = bot.add_unit(U.ORBITALCOMMAND, energy=52.0)
     depot = bot.add_unit(U.SUPPLYDEPOT)
+    bot.add_unit(U.MINERALFIELD, x=19.0, y=22.0)
     bot.minerals, bot.vespene = 300, 100
     return bot, {"lab": lab, "barracks": barracks, "ebay": ebay, "orbital": orbital, "depot": depot}
 
@@ -61,6 +62,13 @@ def test_state_drives_the_catalog_choices() -> None:
     assert {"train_marine", "train_marauder", "research_stimpack"} <= ids
     bot.state.upgrades = {UpgradeId.STIMPACK}
     assert cat.evaluate("research_stimpack", build_catalog_state(bot)).reason == "already_researched"
+
+
+def test_a_base_without_mineral_patches_cannot_call_down_a_mule() -> None:
+    bot = harness.make_bot()
+    bot.add_unit(U.ORBITALCOMMAND, energy=60.0)
+    assert build_catalog_state(bot).mineral_patches == 0
+    assert cat.evaluate("effect_calldownmule", build_catalog_state(bot)).reason == "no_mineral_patch"
 
 
 def test_orbital_energy_below_cost_is_refused_and_depot_gates_nothing_else() -> None:
