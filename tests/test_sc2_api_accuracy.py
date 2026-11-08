@@ -355,6 +355,8 @@ def test_emergency_stop_hold_retreat_shapes() -> None:
 )
 def test_build_structure_issues_a_point_targeted_terranbuild_on_an_scv(structure, ability_name, kind) -> None:
     bot = harness.add_prerequisites(harness.make_bot((U.SCV, 3)), structure)
+    if structure == "ENGINEERINGBAY":  # UnitTypeData.tech_requirement: Command Center (starcraft_commander.sc2_production)
+        bot.add_unit(U.COMMANDCENTER)
     target = "self_natural" if structure == "COMMANDCENTER" else "self_main"
     action = SC2CommandAction(SC2ActionType.BUILD_STRUCTURE, structure, target=target, metadata={"building_type": structure})
     result, views, warns = harness.run_plan(bot, action)
