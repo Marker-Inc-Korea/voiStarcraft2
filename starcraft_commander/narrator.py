@@ -154,12 +154,14 @@ SC2_CASTER_BLOCKER_KOREAN_REASONS: Final[dict[str, str]] = {
     "already_stimmed": "이미 스팀팩이 적용 중입니다",
     "no_cargo_space": "수송 공간이 없습니다",
     "no_cargo_to_unload": "내릴 화물이 없습니다",
+    "empty_transport": "안에 탄 보병이 없습니다",
     "structure_busy": "생산/연구 중인 건물은 이륙할 수 없습니다 — 대기열이 빌 때까지 기다리거나 취소하세요",
     "under_construction": "아직 건설 중인 건물입니다",
 }
 """``no_ready_caster: <blocker>, ...`` blockers (adapter ``_caster_blockers``) in Korean."""
 
 SC2_TARGET_REQUIRED_KOREAN_REASONS: Final[dict[str, str]] = {
+    "no_scv_to_load": "태울 SCV가 근처에 없습니다",
     "explicit_point_required": "어디에 쓸지 위치가 필요합니다 (예: 적 본진 스캔 / 앞마당에 착륙)",
     "no_enemy_target": "대상으로 삼을 보이는 적이 없습니다",
     "no_mineral_patch": "뮤마를 내릴 미네랄 광맥이 없습니다",

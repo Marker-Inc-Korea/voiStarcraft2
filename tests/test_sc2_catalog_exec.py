@@ -102,12 +102,16 @@ def world(entry, issuer: str, missing: str = ""):
             kwargs["location"] = "natural" if entry.subject == "COMMANDCENTER" else "home"
         return bot, kwargs
     if category == "research":
+        building = entry.upgrade_requirements[0][0] if entry.upgrade_requirements else ""
+        if building:  # e.g. Drilling Claws / Smart Servos need an Armory (UpgradeData requirement)
+            requirement_chain(bot, building)
         if missing != "issuer":
-            add_issuer(bot, issuer, count=1)
-        if missing == "done":
-            bot.state.upgrades = {UpgradeId[entry.upgrades[-1]]}
-            if len(entry.upgrades) > 1:
-                bot.state.upgrades = {UpgradeId[n] for n in entry.upgrades}
+            if missing == "done" and not entry.upgrades:  # no UpgradeId exists: the only duplicate is a running order
+                add_issuer(bot, issuer, count=1, orders=(AbilityId[next(iter(entry.abilities.values()))],))
+            else:
+                add_issuer(bot, issuer, count=1)
+        if missing == "done" and entry.upgrades:
+            bot.state.upgrades = {UpgradeId[n] for n in entry.upgrades}
         return bot, kwargs
     # addon / morph-of-structure / ability style
     lowering = entry.lowering
