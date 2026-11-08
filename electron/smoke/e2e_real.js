@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
+const SessionGuard = require("./session_guard.js");
 
 const NAME = process.env.E2E_NAME;
 if (!NAME) { console.error("E2E_NAME required"); process.exit(2); }
@@ -36,6 +37,7 @@ async function main() {
   if (!base) throw new Error("VOI_COMMANDER_URL required (real backend)");
   const main = require("../main.js");
   await app.whenReady();
+  if (SessionGuard.isBlocked(require("electron").nativeImage)) { app.exit(2); return; } // locked/dark screen: BLOCKED (exit 2), never a fake FAIL
   const I = main._internals;
   try { execFileSync(WARP, ["756", "700"]); } catch { /* cursor stays */ }
   const waitFor = async (fn, label, timeout = 30000) => { const t0 = Date.now(); for (;;) { const value = await fn(); if (value) return value; if (Date.now() - t0 > timeout) throw new Error(`timeout: ${label}`); await sleep(40); } };

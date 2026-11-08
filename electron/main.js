@@ -314,7 +314,8 @@ function setFocusable(next) {
 }
 function releaseFocus() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isFocused()) mainWindow.blur();
+  // Never gate this on the window focus flag: a type:"panel" window reports "not focused" after a real click while its web contents still holds the keyboard.
+  if (windowFocusable) mainWindow.blur();
   setFocusable(false);
 }
 function focusDock() {

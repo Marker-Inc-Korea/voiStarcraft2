@@ -6,7 +6,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   const ko = {
     // bar
-    command: "명령", retreat: "후퇴", hold: "홀드", stop: "멈춰", ops: "작전", em_sent: "전달", em_failed: "실패", em_nokey: "키불가", settings: "설정", mic: "음성", listening: "듣는 중", ready: "말하세요", connecting: "연결 중", error: "오류",
+    command: "명령", em_nokey: "키불가", ops: "작전", settings: "설정", mic: "음성", listening: "듣는 중", ready: "말하세요", connecting: "연결 중", error: "오류",
     // stages / tiers
     stage_heard: "들음", stage_understood: "이해", stage_assigned: "배정", stage_ordered: "명령", stage_effect: "효과",
     tier_macro: "매크로", tier_operation: "작전", tier_micro: "마이크로", tier_emergency: "긴급", tier_unknown: "분류중",
@@ -35,7 +35,7 @@
     reset_all: "전체", confirm: "확인", on: "켜짐",
   };
   const en = {
-    command: "Command", retreat: "Retreat", hold: "Hold", stop: "Stop", ops: "Ops", em_sent: "Sent", em_failed: "Failed", em_nokey: "No key", settings: "Settings", mic: "Voice", listening: "Listening", ready: "Speak", connecting: "Connecting", error: "Error",
+    command: "Command", em_nokey: "No key", ops: "Ops", settings: "Settings", mic: "Voice", listening: "Listening", ready: "Speak", connecting: "Connecting", error: "Error",
     stage_heard: "Heard", stage_understood: "Understood", stage_assigned: "Assigned", stage_ordered: "Ordered", stage_effect: "Effect",
     tier_macro: "Macro", tier_operation: "Operation", tier_micro: "Micro", tier_emergency: "Emergency", tier_unknown: "Sorting",
     sim: "Sim", runtimeUnknown: "Unknown", blocked: "Blocked", ended: "Ended",
