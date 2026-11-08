@@ -5378,6 +5378,54 @@ class _RealtimeDecision:
     status: str = ""
     message: str = ""
     family: str = ""
+    command_id: str = ""  # catalog command the resolver chose ("" when the call was not a catalog call)
+    narration: str = ""  # Korean sentence naming the chosen command / the one question / the refusal
+
+
+def _catalog_decision(
+    transcript: str,
+    tool_arguments: Mapping[str, object],
+    catalog_state: object | None,
+) -> _RealtimeDecision | None:
+    """Resolve a ``catalog`` tool call against the live state; ``None`` when the call carries no catalog object."""
+
+    call = realtime_intent.catalog_call(tool_arguments)
+    if call is None:
+        return None
+    output = realtime_intent.tool_arguments_to_provider_output(
+        tool_arguments, catalog_state=catalog_state, transcript=transcript
+    )
+    resolution = dict(output.get("catalog_resolution") or {})
+    command_id = str(resolution.get("command_id", "") or "")
+    kind = str(resolution.get("kind", "") or "")
+    narration = str(output.get("narration_ko") or output.get("assistant_message") or "")
+    if output.get("status") == "clarification_required":
+        if kind == "none" and resolution.get("reason") in {"raw_control_or_injection", "negated", "empty_or_unsafe"}:
+            return _RealtimeDecision(
+                "blocked",
+                realtime_intent.TIER_CLARIFICATION,
+                "catalog_guard",
+                status="refused_raw_control" if "raw" in str(resolution.get("reason")) else "negation_blocked",
+                message=narration,
+                command_id=command_id,
+                narration=narration,
+            )
+        return _RealtimeDecision(
+            "clarification",
+            realtime_intent.TIER_CLARIFICATION,
+            "catalog_resolver",
+            output,
+            command_id=command_id,
+            narration=narration,
+        )
+    return _RealtimeDecision(
+        "executed",
+        realtime_intent.TIER_OPERATION,
+        "catalog_resolver",
+        output,
+        command_id=command_id,
+        narration=narration,
+    )
 
 
 _NEGATION_MESSAGE = "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다."
@@ -5422,6 +5470,7 @@ def _decide_realtime_intent(
     tool_arguments: Mapping[str, object] | None,
     *,
     fast: bool = False,
+    catalog_state: object | None = None,
 ) -> _RealtimeDecision:
     """Deterministic routing for a Realtime intent. Raises ``ValueError`` for an invalid tool call.
 
@@ -5472,6 +5521,19 @@ def _decide_realtime_intent(
             "tool_call",
             realtime_intent.tool_arguments_to_provider_output(tool_arguments),
         )
+    if tool_arguments is not None and tool_arguments.get("catalog") not in (None, "", {}):
+        # A catalog call is resolved against the live state by the server (never by the model); the emergency/fast
+        # layers above it have already had their say on the transcript.
+        if transcript and _micromachine_request_is_emergency(transcript, None):
+            return _RealtimeDecision(
+                "executed",
+                realtime_intent.TIER_EMERGENCY,
+                "emergency_override",
+                _micromachine_emergency_safety_output(transcript),
+            )
+        decided = _catalog_decision(transcript, tool_arguments, catalog_state)
+        if decided is not None:
+            return decided
     emergency_text = bool(transcript) and _micromachine_request_is_emergency(transcript, None)
     if emergency_text and _realtime_call_is_named_operation_cancel(tool_arguments, transcript):
         # "정찰 작전 취소해" cancels one named force; only an explicit retreat word may widen it.

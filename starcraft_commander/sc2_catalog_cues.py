@@ -21,10 +21,10 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     # ------------------------------------------------------------------ research (24)
     "research_terraninfantryweapons": (
         "보병+공격|공업|데미지|화력", "공업", "해병+공격력+올|업|강화", "infantry+weapon|attack|damage", "bio+damage|attack|weapon",
-        "보병+업", "infantry+upgrade|weapons", "바이오+공격|데미지",
+        "보병+업", "infantry+upgrade", "infantry+upgrade+weapon|attack|damage", "바이오+공격|데미지",
     ),
     "research_terraninfantryarmor": (
-        "보병+방어|방업|아머|맷집|단단", "방업", "해병+방어력+올|업|강화", "infantry+armor", "bio+armor", "보병+업", "infantry+upgrade",
+        "보병+방어|방업|아머|맷집|단단", "방업", "해병+방어력+올|업|강화", "infantry+armor", "bio+armor", "보병+업", "infantry+upgrade", "infantry+upgrade+armor",
         "바이오+방어|아머",
     ),
     "research_terranstructurearmorupgrade": (
@@ -120,7 +120,9 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "train_ghost": ("유령+뽑|생산|만들|추가", "고스트+뽑|생산|만들", "ghost+train|build|make", "-핵|nuke|은신|연구"),
     "train_hellion": ("화염차+뽑|생산|만들|추가", "헬리온+뽑|생산", "hellion+train|build|make", "-변신|업그레이드|업글|연구"),
     "train_hellbat": ("화염기갑병+뽑|생산|만들|추가", "헬벳+뽑|생산|만들", "hellbat+train|build|make", "-변신|업그레이드|업글|연구", "두꺼운+화염차+뽑|생산"),
-    "train_siegetank": ("탱크+뽑|생산|만들|추가", "공성전차+뽑|생산|만들", "tank+train|build|make|more", "-모드|시즈|사거리|공격력|방어력"),
+    "train_siegetank": (
+        "탱크+뽑|생산|양산|만들|추가", "공성전차+뽑|생산|양산|만들", "tank+train|build|make|more", "-모드|시즈모드|시즈해|시즈로|시즈풀|시즈켜|시즈박|사거리|공격력|방어력",
+    ),
     "train_widowmine": ("지뢰+뽑|생산|만들|추가", "위도우+마인+뽑|생산", "widow+train|build|make", "-매복|연구|업그레이드"),
     "train_cyclone": ("사이클론+뽑|생산|만들|추가", "cyclone+train|build|make", "-연구|업그레이드|업글|속사"),
     "train_thor": ("토르+뽑|생산|만들|추가", "thor+train|build|make", "-모드|공격력+올"),
@@ -165,9 +167,11 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "morph_siegemode": (
         "탱크+포대|시즈|공성|고정|박아|고정사격|자리잡|배치|siege", "시즈+모드|해줘|켜|전환|siege", "탱크+사거리|사정거리|멀리+늘|길게|올|키|크게|넓|해줘", "tank+range+increase|longer|more", "tank+siege|deploy|fixed|sieged",
         "-풀|해제|이동|돌려|unsiege|일어나|기동",
+        "-탱크뽑|탱크생산|탱크양산|탱크만들|탱크추가|탱크더뽑|탱크더만들",
     ),
     "morph_unsiege": (
         "탱크+이동|일어나|풀|해제|기동|걸어|돌려+모드|시즈|해줘|해|돌려", "시즈+풀|해제|꺼|끄", "탱크+이동+모드", "unsiege|un-siege", "tank+mobile|move+mode|unsiege|unsieg",
+        "-탱크뽑|탱크생산|탱크양산|탱크만들|탱크추가|탱크더뽑|탱크더만들",
     ),
     "morph_orbitalcommand": ("사령부+궤도|오비탈", "궤도+사령부+바꿔|변환|업그레이드|전환|해줘|만들", "orbital", "스캔|뮬+쓰려고+사령부+업", "사령부+업그레이드+궤도"),
     "morph_planetaryfortress": ("사령부+요새|행성|플랭|방어", "행성+요새", "planetary", "사령부+방어+요새", "pf+만들|변환|바꿔"),

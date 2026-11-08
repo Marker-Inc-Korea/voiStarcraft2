@@ -218,3 +218,47 @@ def test_intent_corpus_rows_resolve_to_an_acceptable_command() -> None:
         top1 += bool(ranked) and ranked[0] in acceptable
         top3 += bool(set(ranked) & acceptable)
     assert top3 / len(intent) >= 0.85, (top1, top3)
+
+
+# --------------------------------------------------------------------------- search_scored / disambiguation (WireAgent)
+
+
+def test_search_scored_matches_search_and_is_ranked() -> None:
+    from starcraft_commander import sc2_catalog as catalog
+
+    for phrase in ("upgrade infantry armor", "탱크 사거리 늘려줘", "보병 업 해줘"):
+        scored = catalog.search_scored(phrase)
+        assert tuple(entry for entry, _ in scored) == catalog.search(phrase)
+        assert [score for _, score in scored] == sorted((score for _, score in scored), reverse=True)
+
+
+@pytest.mark.parametrize("phrase", ["시즈탱크 뽑아", "시즈탱크 생산", "시즈탱크 만들어", "탱크 뽑아", "시즈탱크 양산"])
+def test_tank_production_verbs_beat_siege_morph(phrase) -> None:
+    from starcraft_commander import sc2_catalog as catalog
+
+    ids = [entry.id for entry in catalog.search(phrase)]
+    assert ids[:1] == ["train_siegetank"], (phrase, ids)
+    assert "morph_siegemode" not in ids and "morph_unsiege" not in ids
+
+
+@pytest.mark.parametrize(
+    "phrase,winner",
+    [
+        ("upgrade infantry armor", "research_terraninfantryarmor"),
+        ("upgrade infantry weapons", "research_terraninfantryweapons"),
+        ("upgrade infantry attack", "research_terraninfantryweapons"),
+    ],
+)
+def test_infantry_upgrade_names_the_right_family(phrase, winner) -> None:
+    from starcraft_commander import sc2_catalog as catalog
+
+    scored = catalog.search_scored(phrase)
+    assert scored[0][0].id == winner and scored[0][1] > scored[1][1], scored
+
+
+def test_bare_infantry_upgrade_stays_a_tie() -> None:
+    from starcraft_commander import sc2_catalog as catalog
+
+    scored = catalog.search_scored("보병 업 해줘")
+    assert {e.id for e, _ in scored[:2]} == {"research_terraninfantryarmor", "research_terraninfantryweapons"}
+    assert scored[0][1] == scored[1][1]

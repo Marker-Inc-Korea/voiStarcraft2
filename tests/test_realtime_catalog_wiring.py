@@ -153,9 +153,12 @@ def test_every_catalog_id_resolves_to_itself_when_the_model_passes_it() -> None:
         assert result.kind in {"execute", "ask", "refuse"}, (command_id, result)
         assert result.narration_ko, command_id
         kinds[command_id] = result.kind
+        if result.kind == "ask":  # the only legitimate asks: two casters could mean it / a missing prerequisite structure
+            assert result.reason == "ambiguous_issuer" or result.reason.startswith("missing_prerequisite"), (command_id, result)
     issuable = {r.command_id for r in cat.issuable_now(state)}
     for command_id in issuable - {"effect_scan", "effect_tacticaljump", "land"}:
-        assert kinds[command_id] == "execute", command_id
+        assert kinds[command_id] in {"execute", "ask"}, command_id
+    assert sum(k == "execute" for k in kinds.values()) >= 60
 
 
 def test_every_executable_catalog_id_lowers_to_a_compiling_direct_plan() -> None:
