@@ -591,7 +591,7 @@ class PythonSC2BotAdapter:
         if not parents:
             if is_addon and any(_entity_type_name(c) == parent_name and _has_any_addon(c) for c in candidates):
                 return _refusal_report(1, f"{parent_name.lower()}_already_has_addon")
-            return _refusal_report(1, f"no_ready_idle_{parent_name.lower()}")
+            return _refusal_report(1, "no_ready_idle_producer")
         morph_type = self._morph_result_type(action)
         if morph_type is not None and not await self._is_affordable(morph_type):
             return _refusal_report(1, self._unaffordable_reason(morph_type))
@@ -760,7 +760,7 @@ class PythonSC2BotAdapter:
             # python-sc2 silently select a different SCV after observation
             # reorder, defeating concrete tag ownership.
             if not pinned_builders:
-                detail = "pinned_builder_missing"
+                detail = "insufficient_workers"
                 return _refusal_report(
                     1,
                     detail,
@@ -775,7 +775,7 @@ class PythonSC2BotAdapter:
             builder = pinned_builders[0]
             build_order = getattr(builder, "build", None)
             if not callable(build_order):
-                detail = "missing_pinned_builder_capability"
+                detail = "insufficient_workers"
                 return _refusal_report(
                     1,
                     detail,
@@ -855,7 +855,7 @@ class PythonSC2BotAdapter:
                 applied = await self._issue_unit_order(build_gas, geyser)
                 return _issuance_report(1, 1 if applied else 0, "build_refused")
         if "_direct_unit_tags" in action.metadata:
-            return _refusal_report(1, "missing_pinned_builder_capability")
+            return _refusal_report(1, "insufficient_workers")
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
