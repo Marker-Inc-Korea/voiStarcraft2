@@ -471,6 +471,43 @@ class FastPathTest(unittest.TestCase):
         self.assertFalse(ri.micro_phrase_is_negated("스팀팩"))
         self.assertFalse(ri.micro_phrase_is_negated("정찰하지 마"))
 
+    def test_a_unit_name_with_a_production_word_never_becomes_the_ability(self):
+        # Benchmark R5-A: "시즈탱크 뽑아" ran siege MODE although the user asked to TRAIN a tank.
+        for text in ("시즈탱크 뽑아", "시즈 탱크 뽑아줘 빨리", "train a siege tank", "시즈탱크 생산해"):
+            with self.subTest(text):
+                self.assertIsNone(ri.match_micro_fast_path(text))
+                self.assertIsNone(ri.match_fast_path(text))
+
+    def test_a_switch_off_word_maps_to_the_off_ability_never_the_on_one(self):
+        # Benchmark R5-A: "밴시 클로킹 꺼" ran cloak ON. "꺼/끄고" must mean the OFF ability of the same unit.
+        cases = {
+            "밴시 클로킹 꺼": "banshee_decloak",
+            "banshee cloak off": "banshee_decloak",
+            "유령 클로킹 꺼": "ghost_decloak",
+            "시즈모드 꺼": "unsiege",
+            "시즈 모드 끄고": "unsiege",
+        }
+        for text, ability in cases.items():
+            with self.subTest(text):
+                match = ri.match_micro_fast_path(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(ability, match["micro"][0]["ability"])
+                promoted = ri.match_fast_path(text)
+                if promoted is not None:  # only siege/stim families are promoted; cloak stays on the model path
+                    self.assertEqual(ability, promoted.arguments["micro"][0]["ability"])
+
+    def test_plain_ability_phrases_still_match_after_the_opposite_intent_guard(self):
+        for text, ability in {
+            "시즈모드": "siege_mode",
+            "시즈탱크 시즈모드": "siege_mode",
+            "밴시 클로킹 해제": "banshee_decloak",
+            "밴시 클로킹": "banshee_cloak",
+        }.items():
+            with self.subTest(text):
+                match = ri.match_micro_fast_path(text)
+                self.assertIsNotNone(match)
+                self.assertEqual(ability, match["micro"][0]["ability"])
+
 
 class InstructionsTest(unittest.TestCase):
     def test_default_prompt_has_rules_and_fewshot_and_base_is_unchanged(self):
