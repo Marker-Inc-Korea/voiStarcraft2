@@ -272,5 +272,6 @@ def test_fuel_tanks_cost_is_unknowable_offline_so_it_is_never_refused_for_money(
 
     entry = cat.get_command("research_highcapacityfueltanks")
     bot, _ = fx.world(entry)
-    assert tuple(bot.game_data.calculate_ability_cost(AbilityId.RESEARCH_HIGHCAPACITYFUELTANKS))[:2] == (0, 0)
+    cost = bot.game_data.calculate_ability_cost(AbilityId.RESEARCH_HIGHCAPACITYFUELTANKS)
+    assert (cost.minerals, cost.vespene) == (0, 0)
     assert "money" not in fx.variants(entry)
