@@ -128,6 +128,8 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
             bot.add_unit(U.MARINE, x=21.0, y=21.0)
         if token == "medivac_heal":
             bot.add_unit(U.MARINE, x=21.0, y=21.0, health=5.0, health_max=45.0)
+        if token == "command_center_load_all":  # Load All needs SCVs in range (LoadAllNoTargetsFound otherwise)
+            bot.add_unit(U.SCV, x=21.0, y=21.0)
         if mode == "own_cargo":
             bot.add_unit(U.MARINE, x=21.0, y=21.0)
         if token == "medivac_unload_all":
@@ -465,7 +467,9 @@ def test_addon_is_not_ordered_on_a_barracks_that_already_has_one() -> None:
 )
 def test_research_goes_to_the_tech_lab_that_is_idle_and_not_to_a_busy_one(token, lab, ability) -> None:
     bot = harness.make_bot()
-    bot.add_unit(lab, orders=(AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK,))
+    # The busy lab researches the OTHER upgrade: the same upgrade cannot be researched twice (research_already_pending).
+    other = AbilityId.RESEARCH_COMBATSHIELD if token == "STIMPACK" else AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK
+    bot.add_unit(lab, orders=(other,))
     idle = bot.add_unit(lab)
     _, views = run(bot, *lower_direct("research_upgrade", [token]))
     assert tags_of(views) == {idle.tag} and {v["ability_name"] for v in views} == {ability}

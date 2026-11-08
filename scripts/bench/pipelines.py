@@ -66,6 +66,10 @@ def tx_config(model, variant="compact", effort="", src="gold") -> Config:
     return Config(name, "tx", model, variant, reasoning_effort=effort, transcript_source=src)
 
 
+def rtx_config(model, variant="both", endpoint="manual") -> Config:
+    return Config(f"rtx:{model}:{variant}", "rtx", model, variant, endpoint)
+
+
 def fp_config(which, src="gold") -> Config:
     return Config(f"fp:{which}" + (":asrtxt" if src == "asr" else ""), "fp", model=which, transcript_source=src)
 
@@ -343,6 +347,76 @@ async def run_realtime(cfg: Config, row: dict, rep: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# A2: Realtime model, TEXT input (no audio): the real session body, tools and instructions over the websocket
+# ---------------------------------------------------------------------------
+
+
+async def _realtime_text_once(cfg: Config, text: str) -> dict:
+    """session.update (shipped body) -> conversation.item.create(input_text) -> response.create; time to the full tool call."""
+
+    async with websockets.connect(
+        ws_url(cfg.model),
+        additional_headers={"Authorization": f"Bearer {api_key()}", "User-Agent": UA},
+        ssl=ssl_context(), max_size=None, open_timeout=25, ping_interval=None,
+    ) as ws:
+        sess = S.realtime_session_body(cfg.model, cfg.variant, endpoint="manual", transcription=False)["session"]
+        sess.pop("model", None)
+        await ws.send(json.dumps({"type": "session.update", "session": sess}))
+        for _ in range(20):
+            ev = json.loads(await asyncio.wait_for(ws.recv(), 20))
+            if ev.get("type") == "session.updated":
+                break
+            if ev.get("type") == "error":
+                raise RuntimeError(f"session.update error {json.dumps(ev.get('error', ev))[:300]}")
+        await ws.send(json.dumps({"type": "conversation.item.create", "item": {
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}}))
+        t0 = time.perf_counter()
+        await ws.send(json.dumps({"type": "response.create"}))
+        args = usage = t_first = t_done = None
+        status = None
+        while True:
+            ev = json.loads(await asyncio.wait_for(ws.recv(), 60))
+            ty = ev.get("type", "")
+            now = time.perf_counter()
+            if ty == "error":
+                raise RuntimeError(f"realtime error {json.dumps(ev.get('error', ev))[:300]}")
+            if ty == "response.function_call_arguments.delta" and t_first is None:
+                t_first = now
+            elif ty == "response.function_call_arguments.done":
+                t_done, args = now, ev.get("arguments")
+            elif ty == "response.done":
+                r = ev.get("response", {})
+                usage, status = r.get("usage"), r.get("status")
+                if args is None:
+                    for item in r.get("output", []):
+                        if item.get("type") == "function_call":
+                            args, t_done = item.get("arguments"), t_done or now
+                break
+    return {"args": args, "t0": t0, "t_first": t_first, "t_done": t_done or time.perf_counter(), "usage": usage, "status": status}
+
+
+async def run_realtime_text(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = None) -> dict:
+    text = row["text"]
+    t_start = time.perf_counter()
+    try:
+        res, attempts = await with_retries(lambda: _realtime_text_once(cfg, text), attempts=4)
+    except Exception as exc:  # noqa: BLE001
+        return {"tool_args": None, "error": repr(exc)[:300], "attempts": 4, "total_ms": _ms(t_start, time.perf_counter()),
+                "t_tool_call_ms": None, "t_first_token_ms": None, "tokens": {}, "input_text": text}
+    tokens = _rt_tokens(res["usage"])
+    if res["args"] is None:
+        return {"tool_args": None, "error": f"no tool call (status={res['status']})", "attempts": attempts, "tokens": tokens,
+                "t_tool_call_ms": None, "t_first_token_ms": None, "total_ms": _ms(res["t0"], res["t_done"]), "input_text": text}
+    try:
+        args, err = json.loads(res["args"]), None
+    except json.JSONDecodeError:
+        args, err = None, "tool args not JSON"
+    return {"tool_args": args, "error": err, "attempts": attempts, "tokens": tokens, "input_text": text,
+            "t_first_token_ms": _ms(res["t0"], res["t_first"]) if res["t_first"] else None,
+            "t_tool_call_ms": _ms(res["t0"], res["t_done"]), "total_ms": _ms(res["t0"], res["t_done"])}
+
+
+# ---------------------------------------------------------------------------
 # B: text LLM -> tool call (chat completions, streaming)
 # ---------------------------------------------------------------------------
 _TOOL_CHOICE_MODE: dict[str, str] = {}  # model -> "required" | "auto" (learned on 400)
@@ -446,6 +520,8 @@ async def run(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = N
         return await run_realtime(cfg, row, rep)
     if cfg.kind == "tx":
         return await run_text(cfg, row, rep, asr_transcripts)
+    if cfg.kind == "rtx":
+        return await run_realtime_text(cfg, row, rep)
     if cfg.kind == "fp":
         return await run_fastpath(cfg, row, rep, asr_transcripts)
     raise ValueError(cfg.kind)

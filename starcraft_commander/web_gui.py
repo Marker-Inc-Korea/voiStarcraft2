@@ -5378,6 +5378,54 @@ class _RealtimeDecision:
     status: str = ""
     message: str = ""
     family: str = ""
+    command_id: str = ""  # catalog command the resolver chose ("" when the call was not a catalog call)
+    narration: str = ""  # Korean sentence naming the chosen command / the one question / the refusal
+
+
+def _catalog_decision(
+    transcript: str,
+    tool_arguments: Mapping[str, object],
+    catalog_state: object | None,
+) -> _RealtimeDecision | None:
+    """Resolve a ``catalog`` tool call against the live state; ``None`` when the call carries no catalog object."""
+
+    call = realtime_intent.catalog_call(tool_arguments)
+    if call is None:
+        return None
+    output = realtime_intent.tool_arguments_to_provider_output(
+        tool_arguments, catalog_state=catalog_state, transcript=transcript
+    )
+    resolution = dict(output.get("catalog_resolution") or {})
+    command_id = str(resolution.get("command_id", "") or "")
+    kind = str(resolution.get("kind", "") or "")
+    narration = str(output.get("narration_ko") or output.get("assistant_message") or "")
+    if output.get("status") == "clarification_required":
+        if kind == "none" and resolution.get("reason") in {"raw_control_or_injection", "negated", "empty_or_unsafe"}:
+            return _RealtimeDecision(
+                "blocked",
+                realtime_intent.TIER_CLARIFICATION,
+                "catalog_guard",
+                status="refused_raw_control" if "raw" in str(resolution.get("reason")) else "negation_blocked",
+                message=narration,
+                command_id=command_id,
+                narration=narration,
+            )
+        return _RealtimeDecision(
+            "clarification",
+            realtime_intent.TIER_CLARIFICATION,
+            "catalog_resolver",
+            output,
+            command_id=command_id,
+            narration=narration,
+        )
+    return _RealtimeDecision(
+        "executed",
+        realtime_intent.TIER_OPERATION,
+        "catalog_resolver",
+        output,
+        command_id=command_id,
+        narration=narration,
+    )
 
 
 _NEGATION_MESSAGE = "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다."
@@ -5422,6 +5470,7 @@ def _decide_realtime_intent(
     tool_arguments: Mapping[str, object] | None,
     *,
     fast: bool = False,
+    catalog_state: object | None = None,
 ) -> _RealtimeDecision:
     """Deterministic routing for a Realtime intent. Raises ``ValueError`` for an invalid tool call.
 
@@ -5502,6 +5551,39 @@ def _decide_realtime_intent(
             _fast_match_provider_output(rule),
             family=rule.family,
         )
+    if tool_arguments is not None and tool_arguments.get("catalog") not in (None, "", {}):
+        # A catalog call is resolved against the live state by the server (never by the model); the emergency and
+        # promoted fast-rule layers above have already had their say on the transcript.
+        decided = _catalog_decision(transcript, tool_arguments, catalog_state)
+        if decided is not None:
+            return decided
+    if tool_arguments is not None and catalog_state is not None:
+        # State veto: a macro train/build call whose required structure is missing in the live state is turned into ONE
+        # question (the macro layer would only queue or stall it).  Never raises; None = the call proceeds.
+        from starcraft_commander import realtime_catalog
+
+        tier_for_veto = realtime_intent.classify_tier(tool_arguments)
+        if tier_for_veto in {realtime_intent.TIER_MACRO, realtime_intent.TIER_MICRO}:
+            vetoed = realtime_catalog.veto_vague_call(tool_arguments, transcript)
+            if vetoed is None and tier_for_veto == realtime_intent.TIER_MACRO:
+                vetoed = realtime_catalog.veto_macro_call(transcript, catalog_state)  # type: ignore[arg-type]
+            if vetoed is not None:
+                message = vetoed.narration_ko
+                return _RealtimeDecision(
+                    "clarification",
+                    realtime_intent.TIER_CLARIFICATION,
+                    "state_veto",
+                    {
+                        "source": "ui",
+                        "status": "clarification_required",
+                        "goal": message,
+                        "assistant_message": message,
+                        "clarification_prompt": message,
+                        "catalog_resolution": vetoed.to_dict(),
+                    },
+                    command_id=vetoed.command_id,
+                    narration=message,
+                )
     if tool_arguments is not None:
         tier = realtime_intent.classify_tier(tool_arguments)
         if tier == realtime_intent.TIER_CLARIFICATION:
@@ -9284,6 +9366,14 @@ class SessionLoopBridge:
     def micromachine_blackboard_dir(self) -> str:
         return self._micromachine_blackboard_dir
 
+    def catalog_state(self) -> object | None:
+        """``sc2_catalog.CatalogState`` of the bot the executor drives (``None`` = no executor bot, nothing resolves)."""
+
+        executor = getattr(self._session, "executor", None)
+        adapter = getattr(executor, "bot", None)
+        build = getattr(adapter, "catalog_state", None)
+        return build() if callable(build) else None
+
     def direct_runtime_descriptor(self) -> dict[str, str]:
         """Report truthfully what executes Direct (operation/micro/emergency) vectors.
 
@@ -12874,6 +12964,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
 
+    def _catalog_state_snapshot(self) -> object | None:
+        """``sc2_catalog.CatalogState`` of the bot that executes Direct vectors (``None`` when no bot is attached).
+
+        Server-derived like the runtime descriptor: the dry-run demo bot has no real upgrades/add-ons, so a catalog call
+        there resolves against that scripted state (labelled by ``direct_runtime``); with no executor bot nothing resolves.
+        """
+
+        getter = getattr(self._bridge, "catalog_state", None)
+        if not callable(getter):
+            return None
+        try:
+            return getter()
+        except Exception:  # noqa: BLE001 - a snapshot failure must read as "no state", never as a guess.
+            return None
+
     def _direct_runtime_descriptor(self) -> dict[str, str]:
         """What executes operation/micro/emergency vectors (server-derived)."""
 
@@ -13012,7 +13117,18 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            decision = _decide_realtime_intent(transcript, tool_arguments, fast=fast)
+            catalog_state = (
+                self._catalog_state_snapshot()
+                if isinstance(tool_arguments, Mapping)
+                and (
+                    tool_arguments.get("catalog") not in (None, "", {})
+                    or realtime_intent.default_catalog_mode() != "off"
+                )
+                else None
+            )
+            decision = _decide_realtime_intent(
+                transcript, tool_arguments, fast=fast, catalog_state=catalog_state
+            )
         except ValueError as error:
             self._finish_realtime_intent(
                 HTTPStatus.BAD_REQUEST,
@@ -13134,6 +13250,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         source = decision.source
         provider_output = decision.provider_output
         text = transcript
+        catalog_info: dict[str, object] = (
+            {"catalog_command": decision.command_id, "narration": decision.narration}
+            if decision.command_id or decision.narration
+            else {}
+        )
         if decision.kind == "blocked":
             self._finish_realtime_intent(
                 HTTPStatus.OK,
@@ -13150,6 +13271,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 started=started,
                 direct_runtime=direct_runtime,
                 blackboard_dir=blackboard_dir,
+                catalog=catalog_info,
             )
             return
         if decision.kind == "executed" and tool_arguments is not None and source == "tool_call":
@@ -13175,6 +13297,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 started=started,
                 direct_runtime=direct_runtime,
                 blackboard_dir=blackboard_dir,
+                catalog=catalog_info,
             )
             return
 
@@ -13209,6 +13332,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             started=started,
             direct_runtime=direct_runtime,
             blackboard_dir=blackboard_dir,
+            catalog=catalog_info,
         )
 
     def _finish_realtime_intent(
@@ -13223,10 +13347,16 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         started: float,
         direct_runtime: Mapping[str, str],
         blackboard_dir: str,
+        catalog: Mapping[str, object] | None = None,
     ) -> None:
-        """Annotate, publish the ``voice_intent`` event and answer."""
+        """Annotate, publish the ``voice_intent`` event and answer.
+
+        ``catalog`` carries the command the catalog resolver chose and the Korean sentence naming it (also for the
+        question/refusal cases); it is announced in the response and the event BEFORE/while the command executes.
+        """
 
         response = dict(payload)
+        response.update(dict(catalog or {}))
         response["tier"] = tier
         response["source"] = source
         response["direct_runtime"] = dict(direct_runtime)
@@ -13246,6 +13376,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "error": str(response.get("error", "") or ""),
                 "clarification_prompt": str(response.get("clarification_prompt", "") or ""),
                 "direct_runtime": dict(direct_runtime),
+                **{key: str(value) for key, value in (catalog or {}).items()},
             },
             update_id=update_id,
             operation_id=operation_id,

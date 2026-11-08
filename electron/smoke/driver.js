@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
 const Target = require("./target.js");
+const SessionGuard = require("./session_guard.js");
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
@@ -29,8 +30,9 @@ async function main() {
   const backend = createFakeBackend({ port: 0, runtime: process.env.SMOKE_RUNTIME || "dry_run_fake_bot" });
   const port = await backend.listen();
   process.env.VOI_COMMANDER_URL = `http://127.0.0.1:${port}`;
-  const { screen } = require("electron");
+  const { screen, nativeImage } = require("electron");
   await app.whenReady();
+  if (SessionGuard.isBlocked(nativeImage)) { await backend.close(); app.exit(2); return; } // locked/dark screen: BLOCKED (exit 2), never a fake FAIL
   const target = Target.pickTarget(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.env.SMOKE_DISPLAY, screen.getCursorScreenPoint());
   const main = require("../main.js"); // after whenReady(): main.js picks its display from the cursor, so park the cursor first
   try { const p = Target.pointIn(target.bounds, 0.5, 0.5); execFileSync(WARP, [String(p.x), String(p.y)]); await sleep(150); } catch { /* no warp helper: cursor stays */ }
@@ -165,8 +167,6 @@ async function main() {
   check("clicking the input grants focus", d.focusable === true && d.focused === true, { focusable: d.focusable, focused: d.focused });
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='앞마당 방어해';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(300);
-  await js("document.getElementById('btn-retreat').click()");
-  await sleep(300);
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='refuse me';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(2800);
   await warp(display.x + display.width / 2, display.y + 100);
@@ -194,7 +194,7 @@ async function main() {
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await sleep(600);
   await screencapture("06-minimal-bar");
-  check("minimal HUD shows only orb, input, 후퇴/홀드/멈춰, gear", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-retreat,btn-hold,btn-stop,btn-gear' && document.getElementById('retreat-word').textContent==='후퇴' && document.getElementById('hold-word').textContent==='홀드' && document.getElementById('stop-word').textContent==='멈춰' && document.getElementById('cmd-input').placeholder==='명령'"));
+  check("minimal HUD shows only orb, input, gear (no retreat/hold/stop buttons)", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-gear' && !document.getElementById('emergency') && document.getElementById('cmd-input').placeholder==='명령'"));
 
   // ---- 8. settings panel: gear click opens at once, pins the bar, every tab, live apply, Esc / outside / gear close ----
   const openedAt = Date.now();

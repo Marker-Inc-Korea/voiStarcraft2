@@ -123,6 +123,8 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
     "no_damaged_repair_target": "수리할 손상된 대상이 없습니다",
     "no_ready_idle_producer": "준비된 유휴 생산 건물이 없습니다",
     "unaffordable": "자원이 부족합니다",
+    "unresolvable_upgrade": "연구할 업그레이드를 게임 데이터에서 찾지 못했습니다",
+    "insufficient_researchers": "연구 명령을 받을 수 있는 건물이 부족합니다",
     "supply_blocked": "보급(인구수)이 부족합니다 — 보급고가 필요합니다",
     "producer_needs_techlab": "이 유닛은 기술실(Tech Lab)이 붙은 생산 건물이 필요합니다",
     "production_queue_full": "생산 대기열이 가득 찼습니다 (건물당 5칸, 리액터 8칸)",
@@ -152,12 +154,14 @@ SC2_CASTER_BLOCKER_KOREAN_REASONS: Final[dict[str, str]] = {
     "already_stimmed": "이미 스팀팩이 적용 중입니다",
     "no_cargo_space": "수송 공간이 없습니다",
     "no_cargo_to_unload": "내릴 화물이 없습니다",
+    "empty_transport": "안에 탄 보병이 없습니다",
     "structure_busy": "생산/연구 중인 건물은 이륙할 수 없습니다 — 대기열이 빌 때까지 기다리거나 취소하세요",
     "under_construction": "아직 건설 중인 건물입니다",
 }
 """``no_ready_caster: <blocker>, ...`` blockers (adapter ``_caster_blockers``) in Korean."""
 
 SC2_TARGET_REQUIRED_KOREAN_REASONS: Final[dict[str, str]] = {
+    "no_scv_to_load": "태울 SCV가 근처에 없습니다",
     "explicit_point_required": "어디에 쓸지 위치가 필요합니다 (예: 적 본진 스캔 / 앞마당에 착륙)",
     "no_enemy_target": "대상으로 삼을 보이는 적이 없습니다",
     "no_mineral_patch": "뮤마를 내릴 미네랄 광맥이 없습니다",
@@ -730,6 +734,10 @@ def _error_line(error: SC2ExecutionError) -> str:
             label = SC2_ACTION_TYPE_KOREAN_LABELS.get(error.action_type, label)
         detail = str(error.metadata.get("detail", ""))
         reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail) or _ability_refusal_reason(detail)
+        if reason is None:
+            from starcraft_commander.sc2_catalog import refusal_korean
+
+            reason = refusal_korean(detail) or None
         if reason is None:
             reason = _sanitized_action_refusal_reason(detail or error.message)
         if reason is None:

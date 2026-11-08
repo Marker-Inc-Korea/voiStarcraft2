@@ -68,6 +68,8 @@ from dataclasses import dataclass
 from typing import Final
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from starcraft_commander import realtime_catalog as RC
+from starcraft_commander import sc2_catalog
 from starcraft_commander.policy_modulation import (
     MICROMACHINE_ALLOWED_TASK_TOKENS,
     MICROMACHINE_ALLOWED_UNIT_TOKENS,
@@ -237,8 +239,10 @@ _TOP_KEYS: Final[frozenset[str]] = frozenset(
         "macro",
         "emergency",
         "clarification",
+        "catalog",
     }
 )
+_CATALOG_KEYS: Final[frozenset[str]] = frozenset({"intent", "command_id", "location", "queue"})
 _OPERATION_KEYS: Final[frozenset[str]] = frozenset(
     {
         "operation_id",
@@ -389,9 +393,74 @@ def _operation_schema() -> dict[str, object]:
     }
 
 
-def build_submit_command_tool() -> dict[str, object]:
-    """Return the Realtime function-tool JSON for ``submit_command``."""
+# ---------------------------------------------------------------------------
+# Catalog surface (round 5): one optional ``catalog`` object reaches every Terran API command
+# ---------------------------------------------------------------------------
 
+CATALOG_MODE_ENV: Final[str] = "VOI_REALTIME_CATALOG_MODE"
+# off = shipped surface (V0); v1 = catalog.command_id enum (the model picks the id); v2 = catalog.intent phrase (the
+# server resolver picks the command from the live game state).  The default is the benchmark winner
+# (docs/voice-intent-benchmark.md R5-E); the env var overrides it for A/B runs.
+DEFAULT_CATALOG_MODE: Final[str] = "v2"
+
+
+def default_catalog_mode(env: Mapping[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    value = str(source.get(CATALOG_MODE_ENV, "") or "").strip().lower()
+    return value if value in RC.CATALOG_MODES else DEFAULT_CATALOG_MODE
+
+
+def _resolve_catalog_mode(mode: str | None) -> str:
+    mode = default_catalog_mode() if mode is None else str(mode).strip().lower()
+    if mode not in RC.CATALOG_MODES:
+        raise ValueError(f"catalog_mode must be one of: {', '.join(RC.CATALOG_MODES)}.")
+    return mode
+
+
+def _catalog_schema(mode: str) -> dict[str, object]:
+    common: dict[str, object] = {
+        "location": {
+            "type": "string",
+            "enum": list(LOCATION_INTENTS),
+            "description": "Only when a place was SPOKEN (적 본진 스캔 -> enemy_main, 앞마당에 착륙 -> natural).",
+        },
+        "queue": {"type": "boolean", "description": "true only for a step chained with 다음에/이어서/and then."},
+    }
+    if mode in {"v1", "v3"}:
+        return {
+            "type": "object",
+            "description": "ONE concrete game command from the CATALOG list in the instructions (id exactly as listed).",
+            "properties": {
+                "command_id": {"type": "string", "enum": list(sc2_catalog.catalog_tool_enums()["command_ids"])},
+                **common,
+            },
+            "required": ["command_id"],
+        }
+    return {
+        "type": "object",
+        "description": (
+            "The user's own words for ONE game command (research/upgrade, add-on, mode switch, scan/mule/supply drop, "
+            "...). The server picks the exact command from the live game state; never name an ability yourself."
+        ),
+        "properties": {
+            "intent": {"type": "string", "maxLength": 120, "description": "The user's phrase, short, in their language."},
+            **common,
+        },
+        "required": ["intent"],
+    }
+
+
+def build_submit_command_tool(catalog_mode: str | None = None) -> dict[str, object]:
+    """Return the Realtime function-tool JSON for ``submit_command`` (``catalog_mode``: off | v1 | v2)."""
+
+    mode = _resolve_catalog_mode(catalog_mode)
+    tool = _build_base_tool()
+    if mode != "off":
+        tool["parameters"]["properties"]["catalog"] = _catalog_schema(mode)
+    return tool
+
+
+def _build_base_tool() -> dict[str, object]:
     return {
         "type": "function",
         "name": SUBMIT_COMMAND_TOOL_NAME,
@@ -535,6 +604,45 @@ _INSTRUCTION_RULES: Final[str] = (
     "sets queue.\n"
 )
 # Nine extra examples. Benchmark rule: none of these utterances may appear in scripts/bench/corpus.jsonl.
+_RULE_13_UPGRADE_REFUSAL: Final[str] = (
+    " Unsupported tech "
+    "or upgrades (보병 공격력/방어력 업그레이드...) -> clarification, do not map them to a "
+    "building."
+)
+_CATALOG_RULE_V2: Final[str] = (
+    "17. CATALOG: one concrete game command that is neither a squad mission nor a counted/placed production — "
+    "연구/업그레이드 (보병 공격력, 밴시 은신 연구, 탱크 사거리), 애드온, 모드 변환, 스캔/뮬/보급 드롭, 이륙/착륙, 보급고 올리기/내리기, "
+    "핵 장전, 클로킹, 적재/하차 — goes in catalog.intent = the user's OWN words, short, nothing added "
+    "(command_layer operation). The server reads the live game state, picks the exact command (next upgrade level, "
+    "which building), asks ONE question if two readings remain and reports which command it chose. Never choose "
+    "among alternatives yourself and never invent an upgrade or ability name; '업그레이드 해줘' -> "
+    "catalog.intent '업그레이드 해줘'. Unit counts, places and standing production stay in macro/operations.\n"
+)
+_CATALOG_FEWSHOT_V2: Final[str] = (
+    "CATALOG EXAMPLES / 카탈로그 예시:\n"
+    "'보병 공격력 올려줘' -> catalog {intent:'보병 공격력 올려줘'}.\n"
+    "'의료선 빠르게' -> catalog {intent:'의료선 빠르게'}.\n"
+    "'적 본진 스캔' -> catalog {intent:'적 본진 스캔', location:enemy_main}.\n"
+)
+
+
+def _catalog_rule_v1() -> str:
+    return (
+        "17. CATALOG: one concrete game command that is neither a squad mission nor a counted/placed production — "
+        "research/upgrades, add-ons, mode switches, scan/mule/supply drop, lift/land, depot raise/lower, nuke, "
+        "cloak, load/unload — goes in catalog.command_id = the id from the CATALOG list below (exactly one; "
+        "command_layer operation). Multi-level upgrades: give the family id, the server picks the next level. "
+        "If two ids fit ('업그레이드 해줘', '공업이야 방업이야') or none fits, use clarification. Never invent an id.\n"
+        "CATALOG (id=말):\n" + RC.catalog_listing() + "\n"
+    )
+
+
+_CATALOG_FEWSHOT_V1: Final[str] = (
+    "CATALOG EXAMPLES / 카탈로그 예시:\n"
+    "'보병 공격력 올려줘' -> catalog {command_id:research_terraninfantryweapons}.\n"
+    "'의료선 빠르게' -> catalog {command_id:effect_medivacigniteafterburners}.\n"
+    "'적 본진 스캔' -> catalog {command_id:effect_scan, location:enemy_main}.\n"
+)
 _INSTRUCTION_FEWSHOT: Final[str] = (
     "MORE EXAMPLES / 추가 예시:\n"
     "'군수공장 하나 지어줘' -> macro {task_type:tech_transition, building_tasks:"
@@ -556,7 +664,7 @@ _INSTRUCTION_FEWSHOT: Final[str] = (
 )
 
 
-def build_realtime_instructions(*, rules: bool = True, fewshot: bool = True) -> str:
+def build_realtime_instructions(*, rules: bool = True, fewshot: bool = True, catalog_mode: str | None = None) -> str:
     """Bilingual (ko/en) system prompt for the Realtime session.
 
     ``rules`` appends the benchmark-derived rules 8-14 (docs/voice-intent-benchmark.md section 8) and ``fewshot``
@@ -616,9 +724,18 @@ def build_realtime_instructions(*, rules: bool = True, fewshot: bool = True) -> 
         "production_targets:[TERRAN_SIEGETANK, TERRAN_BUNKER], building_tasks:"
         "[{building_type:TERRAN_BUNKER, placement_intent:natural}]}.\n"
     )
+    mode = _resolve_catalog_mode(catalog_mode)
     if rules:
-        text += _INSTRUCTION_RULES
+        text += _INSTRUCTION_RULES if mode == "off" else _INSTRUCTION_RULES.replace(_RULE_13_UPGRADE_REFUSAL, "")
+        if mode in {"v1", "v3"}:
+            text += _catalog_rule_v1()
+        elif mode == "v2":
+            text += _CATALOG_RULE_V2
     if fewshot:
+        if mode in {"v1", "v3"}:
+            text += _CATALOG_FEWSHOT_V1
+        elif mode == "v2":
+            text += _CATALOG_FEWSHOT_V2
         text += _INSTRUCTION_FEWSHOT
     return text
 
@@ -712,6 +829,30 @@ def _emergency_flags(args: Mapping[str, object]) -> dict[str, bool]:
     }
 
 
+def catalog_call(args: Mapping[str, object]) -> Mapping[str, object] | None:
+    """The validated ``catalog`` object of a tool call (``None`` when absent); raises ``ValueError`` when malformed."""
+
+    raw = args.get("catalog")
+    if raw in (None, "", {}):
+        return None
+    raw = _mapping(raw, "catalog")
+    _reject_unknown(raw, _CATALOG_KEYS, "catalog")
+    intent = _text(raw.get("intent"), "catalog.intent")
+    command_id = _text(raw.get("command_id"), "catalog.command_id")
+    if not intent and not command_id:
+        raise ValueError("catalog needs intent or command_id.")
+    if command_id and command_id.lower() not in sc2_catalog.catalog_tool_enums()["command_ids"]:
+        raise ValueError("catalog.command_id is not a catalog command.")
+    location = _text(raw.get("location"), "catalog.location")
+    if location and location not in LOCATION_INTENTS:
+        raise ValueError(f"catalog.location must be one of: {', '.join(LOCATION_INTENTS)}.")
+    if raw.get("queue") is not None:
+        _bool(raw.get("queue"), "catalog.queue")
+    if len(intent) > 300:
+        raise ValueError("catalog.intent is too long.")
+    return raw
+
+
 def _micro_items(args: Mapping[str, object]) -> list[Mapping[str, object]]:
     raw = args.get("micro")
     if raw in (None, "", []):
@@ -760,7 +901,7 @@ def classify_tier(args: Mapping[str, object]) -> str:
         return TIER_CLARIFICATION
     if any(_emergency_flags(args).values()):
         return TIER_EMERGENCY
-    if _operation_items(args):
+    if _operation_items(args) or catalog_call(args) is not None:
         return TIER_OPERATION
     if _micro_items(args):
         return TIER_MICRO
@@ -1104,8 +1245,51 @@ def _lower_macro(
     return fragment, task_type
 
 
-def tool_arguments_to_provider_output(args: Mapping[str, object]) -> dict[str, object]:
+def _lower_catalog(
+    args: Mapping[str, object],
+    call: Mapping[str, object],
+    goal: str,
+    transcript: str,
+    state: object | None,
+) -> dict[str, object]:
+    """A ``catalog`` call -> the Direct provider output of the command the resolver chose (or a clarification)."""
+
+    others = [k for k in ("operations", "micro", "macro") if _has_content(args.get(k))]
+    if others or any(_emergency_flags(args).values()):
+        raise ValueError("catalog cannot be combined with operations, micro, macro or emergency in one call.")
+    mode = "v2"
+    if _text(call.get("command_id"), "catalog.command_id"):
+        mode = "v3" if default_catalog_mode() == "v3" else "v1"
+    resolution = RC.resolve_catalog_call(call, transcript, state, mode=mode)  # type: ignore[arg-type]
+    if resolution.kind != RC.KIND_EXECUTE:
+        message = resolution.narration_ko or resolution.reason_ko or "무엇을 할지 다시 말씀해 주세요."
+        return {
+            "source": PolicyModulationSource.UI.value,
+            "status": "clarification_required",
+            "goal": goal or message,
+            "assistant_message": message,
+            "clarification_prompt": message,
+            "catalog_resolution": resolution.to_dict(),
+        }
+    output = RC.provider_output(resolution, goal=goal or resolution.narration_ko)
+    output["rationale"] = _RATIONALE
+    output["narration_ko"] = resolution.narration_ko
+    output["catalog_resolution"] = resolution.to_dict()
+    output["tags"] = [*output["tags"], f"catalog_source:{resolution.source}"]  # type: ignore[misc]
+    _validate_against_dsl(output)
+    return output
+
+
+def tool_arguments_to_provider_output(
+    args: Mapping[str, object],
+    *,
+    catalog_state: object | None = None,
+    transcript: str = "",
+) -> dict[str, object]:
     """Lower ``submit_command`` arguments to a provider-output mapping.
+
+    ``catalog_state`` (a ``sc2_catalog.CatalogState`` of the live game) and the heard ``transcript`` are read only by a
+    ``catalog`` call: without a snapshot such a call executes nothing (clarification).
 
     The result is accepted by ``PolicyModulationVector.from_mapping`` (or is a
     terminal ``clarification_required`` mapping). Raises ``ValueError`` for
@@ -1128,6 +1312,9 @@ def tool_arguments_to_provider_output(args: Mapping[str, object]) -> dict[str, o
         }
     if not goal:
         raise ValueError("goal must be a non-empty string.")
+    catalog = catalog_call(args)
+    if catalog is not None:
+        return _lower_catalog(args, catalog, goal, transcript, catalog_state)
     tier = classify_tier(args)
     declared = args.get("command_layer")
     priority = _priority(args.get("intensity"), "intensity", 0.75)
@@ -1302,6 +1489,23 @@ _OTHER_INTENT_RE: Final[re.Pattern[str]] = re.compile(
     r"retreat|research|move|send)\b",
     re.IGNORECASE,
 )
+# A unit name next to a production verb ("시즈탱크 뽑아", "train a siege tank") is a TRAIN request, not the unit's
+# mode/ability: the plain ability rules would execute something else than what was said (benchmark R5-A).
+_OPPOSITE_INTENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"뽑|찍어|생산|양산|\b(?:train|produce|make|build|queue)\b",
+    re.IGNORECASE,
+)
+# "꺼 / 끄고 / off" after a switchable ability is the OFF ability of the same unit ("밴시 클로킹 꺼" = decloak,
+# "시즈모드 꺼" = unsiege). Executing the ON ability here would do the opposite of what was said.
+_SWITCH_OFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:꺼|끄(?:고|자|라|기|면|세요)?|끔|끈|오프)(?![가-힣])|\b(?:off|turn\s+off|switch\s+off)\b",
+    re.IGNORECASE,
+)
+_OFF_ABILITY: Final[dict[str, str]] = {
+    "siege_mode": "unsiege",
+    "banshee_cloak": "banshee_decloak",
+    "ghost_cloak": "ghost_decloak",
+}
 _QUESTION_RE: Final[re.Pattern[str]] = re.compile(
     r"\?|뭐|무엇|어떻게|어때|인가요|있어|할까|\b(?:what|how|why|can|should)\b",
     re.IGNORECASE,
@@ -1359,7 +1563,12 @@ def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
     text = " ".join(transcript.split())
     if not text or len(text) > 80:
         return None
-    if _NEGATION_RE.search(text) or _OTHER_INTENT_RE.search(text) or _QUESTION_RE.search(text):
+    if (
+        _NEGATION_RE.search(text)
+        or _OTHER_INTENT_RE.search(text)
+        or _QUESTION_RE.search(text)
+        or _OPPOSITE_INTENT_RE.search(text)
+    ):
         return None
     matches = [rule for rule in _MICRO_RULES if rule.pattern.search(text)]
     if not matches:
@@ -1383,7 +1592,13 @@ def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
         return None
     if first.ability in {"siege_mode"} and any(rule.ability == "unsiege" for rule in matches):
         return None
-    item: dict[str, object] = {"ability": first.ability}
+    ability = first.ability
+    if _SWITCH_OFF_RE.search(text):
+        ability = _OFF_ABILITY.get(ability, "")
+        if not ability:  # stim cannot be switched off: never execute it
+            return None
+        first = next(rule for rule in _MICRO_RULES if rule.ability == ability)
+    item: dict[str, object] = {"ability": ability}
     if first.unit_classes:
         item["unit_classes"] = list(first.unit_classes)
     return {
@@ -1577,6 +1792,7 @@ def _fast_micro(text: str, bare: str) -> FastPathMatch | None:
         or _FAST_STRUCT_WORD_RE.search(text)
         or _FAST_ATTACKISH_RE.search(text)
         or _FAST_PROD_VERB_RE.search(text)
+        or _OPPOSITE_INTENT_RE.search(text)
         or _FAST_CONTRA_RE.search(text)
         or _FAST_MICRO_BLOCK_RE.search(text)
     ):
@@ -1587,6 +1803,13 @@ def _fast_micro(text: str, bare: str) -> FastPathMatch | None:
     first_family, ability, units = hits[0]
     if any(family != first_family for family, _a, _u in hits):
         return None
+    if _SWITCH_OFF_RE.search(text):
+        off = _OFF_ABILITY.get(ability, "")
+        if not off:  # stim cannot be switched off: never execute it
+            return None
+        ability = off
+        if off == "unsiege":
+            units = ("TERRAN_SIEGETANK",)
     item: dict[str, object] = {"ability": ability}
     if units:
         item["unit_classes"] = list(units)
