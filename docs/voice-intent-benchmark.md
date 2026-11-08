@@ -489,3 +489,37 @@ Findings:
 - Not met: the user target "as fast as possible" for emergency is bounded below by the 450 ms silence wait plus ASR plus the model-free path (about 1.6 s). Faster requires acting on partial transcripts, measured earlier at 24% wrong fires (stable 0 ms), so it is not adopted.
 
 Limits: one quiet session, 3 reps, synthetic TTS audio, proxy-minted secrets; the three configs ran concurrently (paired, relative comparison valid; absolute numbers include the concurrency). Not measured: live SC2 execution time after the ack.
+
+## R5-F. Catalog wiring: V0 / V1 / V2 / V3 on the 272-row intent corpus (model = gpt-realtime, real Realtime websocket, transcript as TEXT)
+
+What is compared (all on the same shipped session body, `tool_choice: required`; only the `catalog` surface differs):
+
+| variant | surface | who picks the command | prompt+tool size (chars; no tokenizer installed, so chars) |
+|---|---|---|---|
+| V0 `both` | shipped (no `catalog`), rule 13 refuses upgrades, NO server state | the model (macro/micro/operations) | 15 814 (mean 4 871 input+output tokens/call as billed) |
+| V1 `both_cv1` | `catalog.command_id` enum (103 ids from `catalog_tool_enums()`) + a derived 2.2 kB id=말 list in the prompt | the model; the server only evaluates it against the state | 22 220 (7 233 tokens/call) |
+| V2 `both_cv2` | `catalog.intent` = the user's own words (small schema, no ids) | the server resolver `realtime_catalog.resolve_intent` (search_scored -> evaluate(state) -> execute / ask once / refuse / none) | 17 346 (5 293 tokens/call) |
+| V3 `both_cv3` | V1 surface + server check that the HEARD words resolve to the same command, else ask | model + server | 22 220 (7 234 tokens/call) |
+
+Server-side for V1-V3 (not in V0): live `CatalogState` (`PythonSC2BotAdapter.catalog_state()`), emergency/fast-rule layers first, state veto for macro train/build calls whose required structure is missing, guards for a bare "테크 올려" / bare "클로킹", negation + raw-control/injection never execute. The chosen command and a Korean sentence naming it (`narration`, `catalog_command`) are in the `/api/realtime/intent` response and the `voice_intent` event.
+
+Results (2 reps each, 272 rows, tiers explicit/intent/ambiguous/state/negative n = 126/57/25/35/29; scoring = `intent_scoring.py`; stored raw tool calls re-scored with the final server code, no model calls). Machine load1 during the runs 1.1-4.3 (`meta.loadavg_1_5_15` in every result file); the three cells of one batch ran concurrently.
+
+| variant | exact | acceptable | wrong-exec | ambiguous correct | **UNSAFE (sum of 2 reps)** | unanswered | latency p50 / p95 ms |
+|---|---|---|---|---|---|---|---|
+| V0 | 0.632 | 0.615 | 0.112 | 0.78 | **28** | 18 | 1694 / 3018 |
+| V1 | 0.930 | 0.880 | 0.025 | 0.90 | **3** | 5 | 1669 / 3046 |
+| V2 | 0.906 | 0.867 | 0.053 | 0.98 | **0** | 2 | 1664 / 2803 |
+| V3 | 0.927 | 0.877 | 0.020 | 0.98 | **1** | 4 | 1702 / 3591 |
+
+Per tier (exact/acceptable, unsafe): V0 explicit .70/.70, intent .55/.52, state .33/.29 with 18 unsafe; V1 .95/.92, .88/.87, .92/.65; V2 .91/.88, .93/.89, .75/.71; V3 .95/.92, .87/.86, .92/.65 (unsafe in the ambiguous tier only). Baseline the user asked to beat (R5-C, text proxy gpt-5.6-sol): exact 0.543 / acceptable 0.505 and 8 unsafe on the state tier; research rows 11/67.
+
+Resolver alone with a PERFECT model (`intent_run.py resolver`; intent = the user's exact words): exact 0.957, acceptable 0.915, wrong-exec 0.000, ambiguous 1.000, unsafe 0. Its remaining misses are correct asks (scan/land need a place, "클로킹" needs a caster, "보병 업 해줘" is a real tie) or state refusals the gold counts as executable (add-on already attached).
+
+Decision. Rule #1 (execute exactly what was said/meant; unsafe must be 0) makes **V2 the default** (`DEFAULT_CATALOG_MODE = "v2"`, env `VOI_REALTIME_CATALOG_MODE=off|v1|v2|v3` selects the others; `off` is byte-identical to the previous shipped prompt+tool, asserted against fcefd08). V2 is the only variant with 0 unsafe in both reps, the smallest added prompt (+1.5 kB vs +6.4 kB), the best clarification behaviour (0.98) and the best intent-phrase tier; V1/V3 win 2-3 pp of exact on the explicit tier because the model names the id of an unambiguous noun directly, but V1 executes 3 vague calls (macro "테크 올려", a bare cloak, a tank-range -> unrelated research) and V3 1. Latency is not a differentiator (p50 within 40 ms; the model call dominates). The accuracy gain of every catalog variant over V0 is mostly the server state (V0 never sees it): V0 executes 28 unsafe calls.
+
+Old 160-sentence benchmark (no regression): `gold_check_shipped.py` PASS 160/160; deterministic layers re-measured on this tree: `shipped_regex` 12 answered / 11 correct, `shipped_fast` 39 answered / 38 correct (same as the previously documented 12/11 and 39/38; the one wrong row `ope-024` is the documented scout-cancel case). The fast-rule family cap (5) is untouched.
+
+Not measured / limits: `gpt-realtime-mini` (the proxy lists it, no cell was run: the cost-free 2-rep matrix for gpt-realtime consumed the time budget); real speech/ASR for the new phrases (text input only, so ASR errors are not in these numbers); text chat proxies for the schema comparison; live SC2 (SC2 is not installed: every statement is request-shape evidence from the python-sc2/s2client-api harness); the dry-run demo bot has no real upgrades/add-ons, so a catalog call there resolves against that scripted state; one session, 2 reps, per-tier cells 25-126 calls (wide CIs); latency numbers share the machine with 3 concurrent cells and are NOT a latency claim.
+
+Reproduce: `source ~/.zshenv; python3 scripts/bench/intent_run.py llm --kind rtx --model gpt-realtime --variant both_cv2 --reps 2` (variants `both`, `both_cv1`, `both_cv2`, `both_cv3`); `python3 scripts/bench/intent_run.py resolver`; `python3 scripts/bench/intent_compare.py --glob 'intent_baseline_llm_rtx_gpt-realtime_*'`; end-to-end: `pytest tests/test_realtime_catalog_wiring.py` (36-row SEND_TABLE sends the exact AbilityId).

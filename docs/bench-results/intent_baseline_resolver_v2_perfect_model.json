@@ -1,18 +1,18 @@
 {
  "aggregate": {
   "all": {
-   "acceptable_accuracy": 0.825,
+   "acceptable_accuracy": 0.915,
    "ambiguous_rows": 25,
    "clarification_rate": 1.0,
-   "correct_rate": 0.8713235294117647,
-   "exact_accuracy": 0.8602150537634409,
+   "correct_rate": 0.9375,
+   "exact_accuracy": 0.956989247311828,
    "exact_rows": 186,
    "execute_rows": 200,
    "n": 272,
    "unanswered": 0,
    "unsafe_count": 0,
    "unsafe_rate": 0.0,
-   "wrong_exec_rate": 0.01
+   "wrong_exec_rate": 0.0
   },
   "ambiguous": {
    "acceptable_accuracy": null,
@@ -29,18 +29,18 @@
    "wrong_exec_rate": null
   },
   "explicit": {
-   "acceptable_accuracy": 0.7936507936507936,
+   "acceptable_accuracy": 0.9047619047619048,
    "ambiguous_rows": 0,
    "clarification_rate": null,
-   "correct_rate": 0.7936507936507936,
-   "exact_accuracy": 0.825,
+   "correct_rate": 0.9047619047619048,
+   "exact_accuracy": 0.9416666666666667,
    "exact_rows": 120,
    "execute_rows": 126,
    "n": 126,
    "unanswered": 0,
    "unsafe_count": 0,
    "unsafe_rate": 0.0,
-   "wrong_exec_rate": 0.015873015873015872
+   "wrong_exec_rate": 0.0
   },
   "intent": {
    "acceptable_accuracy": 0.9649122807017544,
@@ -71,11 +71,11 @@
    "wrong_exec_rate": null
   },
   "state": {
-   "acceptable_accuracy": 0.5882352941176471,
+   "acceptable_accuracy": 0.8235294117647058,
    "ambiguous_rows": 0,
    "clarification_rate": null,
-   "correct_rate": 0.8,
-   "exact_accuracy": 0.5833333333333334,
+   "correct_rate": 0.9142857142857143,
+   "exact_accuracy": 0.9166666666666666,
    "exact_rows": 12,
    "execute_rows": 17,
    "n": 35,
@@ -92,33 +92,33 @@
    "n": 7
   },
   "BUILD": {
-   "acceptable": 22,
-   "acceptable_accuracy": 0.6875,
+   "acceptable": 25,
+   "acceptable_accuracy": 0.78125,
    "n": 32
   },
   "EFFECT": {
-   "acceptable": 24,
-   "acceptable_accuracy": 0.8,
+   "acceptable": 26,
+   "acceptable_accuracy": 0.8666666666666667,
    "n": 30
   },
   "MORPH": {
-   "acceptable": 24,
-   "acceptable_accuracy": 0.8888888888888888,
+   "acceptable": 27,
+   "acceptable_accuracy": 1.0,
    "n": 27
   },
   "OTHER": {
-   "acceptable": 11,
-   "acceptable_accuracy": 0.7857142857142857,
+   "acceptable": 13,
+   "acceptable_accuracy": 0.9285714285714286,
    "n": 14
   },
   "RESEARCH": {
-   "acceptable": 59,
-   "acceptable_accuracy": 0.8805970149253731,
+   "acceptable": 66,
+   "acceptable_accuracy": 0.9850746268656716,
    "n": 67
   },
   "TRAIN": {
-   "acceptable": 21,
-   "acceptable_accuracy": 0.9130434782608695,
+   "acceptable": 22,
+   "acceptable_accuracy": 0.9565217391304348,
    "n": 23
   }
  },
@@ -132,9 +132,9 @@
    "tokens_n": 0
   },
   "loadavg_1_5_15": [
-   3.85,
-   3.32,
-   3.29
+   2.09,
+   1.7,
+   1.95
   ],
   "rows": 272,
   "system": "V2 resolver with a perfect model (intent = user's words); deterministic layer first"
@@ -197,11 +197,11 @@
    "reason": ""
   },
   "amb-008": {
-   "chosen": "research_terraninfantryarmor",
+   "chosen": "",
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 중 어느 것으로 할까요?",
+   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
    "reason": ""
   },
   "amb-009": {
@@ -685,11 +685,11 @@
    "reason": ""
   },
   "exp-032": {
-   "chosen": "",
+   "chosen": "build_reactor",
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
+   "narration": "리액터: 이미 애드온이 붙어 있습니다",
    "reason": ""
   },
   "exp-033": {
@@ -737,20 +737,26 @@
    "source": "catalog_resolver"
   },
   "exp-037": {
-   "chosen": "research_terraninfantryarmor",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "research_terraninfantryweapons",
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#1",
+   "commands": [
+    "RESEARCH_TERRANINFANTRYWEAPONS#1"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
+   "reason": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
+   "source": "catalog_resolver"
   },
   "exp-038": {
    "chosen": "research_terraninfantryarmor",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 중 어느 것으로 할까요?",
-   "reason": ""
+   "command": "RESEARCH_TERRANINFANTRYARMOR#1",
+   "commands": [
+    "RESEARCH_TERRANINFANTRYARMOR#1"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
+   "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
+   "source": "catalog_resolver"
   },
   "exp-039": {
    "chosen": "research_terranstructurearmorupgrade",
@@ -786,12 +792,15 @@
    "source": "catalog_resolver"
   },
   "exp-042": {
-   "chosen": "research_terraninfantryarmor",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 / 함선 공격력 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "research_terranvehicleweapons",
+   "command": "RESEARCH_TERRANVEHICLEWEAPONS#1",
+   "commands": [
+    "RESEARCH_TERRANVEHICLEWEAPONS#1"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
+   "reason": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
+   "source": "catalog_resolver"
   },
   "exp-043": {
    "chosen": "research_terranvehicleandshipplating",
@@ -805,12 +814,15 @@
    "source": "catalog_resolver"
   },
   "exp-044": {
-   "chosen": "research_terraninfantryarmor",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 / 함선 공격력 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "research_terranshipweapons",
+   "command": "RESEARCH_TERRANSHIPWEAPONS#1",
+   "commands": [
+    "RESEARCH_TERRANSHIPWEAPONS#1"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
+   "reason": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
+   "source": "catalog_resolver"
   },
   "exp-045": {
    "chosen": "research_drillingclaws",
@@ -846,12 +858,15 @@
    "source": "catalog_resolver"
   },
   "exp-048": {
-   "chosen": "research_terraninfantryarmor",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 방어력 / 보병 공격력 / 함선 공격력 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "research_rapidfirelaunchers",
+   "command": "RESEARCH_RAPIDFIRELAUNCHERS",
+   "commands": [
+    "RESEARCH_RAPIDFIRELAUNCHERS"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
+   "reason": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
+   "source": "catalog_resolver"
   },
   "exp-049": {
    "chosen": "research_bansheecloakingfield",
@@ -1004,14 +1019,14 @@
    "source": "catalog_resolver"
   },
   "exp-063": {
-   "chosen": "morph_hellbat",
-   "command": "MORPH_HELLBAT",
+   "chosen": "morph_hellion",
+   "command": "MORPH_HELLION",
    "commands": [
-    "MORPH_HELLBAT"
+    "MORPH_HELLION"
    ],
    "kind": "execute",
-   "narration": "변환합니다: 화염기갑병으로 (화염차)",
-   "reason": "변환합니다: 화염기갑병으로 (화염차)",
+   "narration": "변환합니다: 화염차로 (화염기갑병)",
+   "reason": "변환합니다: 화염차로 (화염기갑병)",
    "source": "catalog_resolver"
   },
   "exp-064": {
@@ -1120,20 +1135,26 @@
    "reason": ""
   },
   "exp-074": {
-   "chosen": "",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
-   "reason": ""
+   "chosen": "effect_calldownmule",
+   "command": "EFFECT_CALLDOWNMULE",
+   "commands": [
+    "EFFECT_CALLDOWNMULE"
+   ],
+   "kind": "execute",
+   "narration": "사용합니다: 뮬",
+   "reason": "사용합니다: 뮬",
+   "source": "catalog_resolver"
   },
   "exp-075": {
-   "chosen": "",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
-   "reason": ""
+   "chosen": "effect_supplydrop",
+   "command": "EFFECT_SUPPLYDROP",
+   "commands": [
+    "EFFECT_SUPPLYDROP"
+   ],
+   "kind": "execute",
+   "narration": "사용합니다: 보급 드롭",
+   "reason": "사용합니다: 보급 드롭",
+   "source": "catalog_resolver"
   },
   "exp-076": {
    "command": "EFFECT_EMP",
@@ -1380,12 +1401,15 @@
    "reason": ""
   },
   "exp-100": {
-   "chosen": "",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
-   "reason": ""
+   "chosen": "load",
+   "command": "LOAD",
+   "commands": [
+    "LOAD"
+   ],
+   "kind": "execute",
+   "narration": "실행합니다: 태워",
+   "reason": "실행합니다: 태워",
+   "source": "catalog_resolver"
   },
   "exp-101": {
    "chosen": "loadall",
@@ -1410,12 +1434,15 @@
    "source": "catalog_resolver"
   },
   "exp-103": {
-   "chosen": "",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
-   "reason": ""
+   "chosen": "unloadallat",
+   "command": "UNLOADALLAT",
+   "commands": [
+    "UNLOADALLAT"
+   ],
+   "kind": "execute",
+   "narration": "실행합니다: 의료선 내려",
+   "reason": "실행합니다: 의료선 내려",
+   "source": "catalog_resolver"
   },
   "exp-104": {
    "chosen": "research_stimpack",
@@ -1484,12 +1511,15 @@
    "source": "catalog_resolver"
   },
   "exp-110": {
-   "chosen": "morph_siegemode",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "시즈 모드 / 탱크 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "train_siegetank",
+   "command": "TRAIN_SIEGETANK",
+   "commands": [
+    "TRAIN_SIEGETANK"
+   ],
+   "kind": "execute",
+   "narration": "생산합니다: 탱크 (군수공장)",
+   "reason": "생산합니다: 탱크 (군수공장)",
+   "source": "catalog_resolver"
   },
   "exp-111": {
    "chosen": "effect_scan",
@@ -1520,15 +1550,12 @@
    "source": "micro_fast_path"
   },
   "exp-114": {
-   "chosen": "train_banshee",
-   "command": "TRAIN_BANSHEE",
-   "commands": [
-    "TRAIN_BANSHEE"
-   ],
-   "kind": "execute",
-   "narration": "생산합니다: 밴시 (우주공항)",
-   "reason": "생산합니다: 밴시 (우주공항)",
-   "source": "catalog_resolver"
+   "chosen": "behavior_cloakon",
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
+   "reason": ""
   },
   "exp-115": {
    "command": "BEHAVIOR_CLOAKON@GHOST",
@@ -1606,20 +1633,26 @@
    "source": "catalog_resolver"
   },
   "exp-123": {
-   "chosen": "build_barracks",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "병영 / 벙커 / 사령부 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "build_engineeringbay",
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "narration": "건설합니다: 공학 연구소",
+   "reason": "건설합니다: 공학 연구소",
+   "source": "catalog_resolver"
   },
   "exp-124": {
-   "chosen": "build_barracks",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "병영 / 벙커 / 사령부 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "build_engineeringbay",
+   "command": "BUILD_ENGINEERINGBAY",
+   "commands": [
+    "BUILD_ENGINEERINGBAY"
+   ],
+   "kind": "execute",
+   "narration": "건설합니다: 공학 연구소",
+   "reason": "건설합니다: 공학 연구소",
+   "source": "catalog_resolver"
   },
   "exp-125": {
    "chosen": "build_barracks",
@@ -1633,12 +1666,15 @@
    "source": "catalog_resolver"
   },
   "exp-126": {
-   "chosen": "",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
-   "reason": ""
+   "chosen": "build_commandcenter",
+   "command": "BUILD_COMMANDCENTER",
+   "commands": [
+    "BUILD_COMMANDCENTER"
+   ],
+   "kind": "execute",
+   "narration": "건설합니다: 사령부",
+   "reason": "건설합니다: 사령부",
+   "source": "catalog_resolver"
   },
   "int-001": {
    "chosen": "research_terraninfantryweapons",
@@ -2508,34 +2544,40 @@
   },
   "sta-005": {
    "chosen": "research_terraninfantryweapons",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 공격력 / 해병 중 어느 것으로 할까요?",
-   "reason": ""
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#3",
+   "commands": [
+    "RESEARCH_TERRANINFANTRYWEAPONS#3"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
+   "reason": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
+   "source": "catalog_resolver"
   },
   "sta-006": {
+   "chosen": "research_terraninfantryweapons",
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#1",
+   "commands": [
+    "RESEARCH_TERRANINFANTRYWEAPONS#1"
+   ],
+   "kind": "execute",
+   "narration": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
+   "reason": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
+   "source": "catalog_resolver"
+  },
+  "sta-007": {
    "chosen": "research_terraninfantryweapons",
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "보병 공격력 / 해병 중 어느 것으로 할까요?",
-   "reason": ""
-  },
-  "sta-007": {
-   "chosen": "train_marine",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "보병 공격력: 더 올릴 단계가 없습니다 — 해병(으)로 할까요?",
+   "narration": "보병 공격력: 더 올릴 단계가 없습니다",
    "reason": ""
   },
   "sta-008": {
-   "chosen": "train_marine",
+   "chosen": "research_terraninfantryweapons",
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "보병 공격력: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 공학 연구소) — 해병(으)로 할까요?",
+   "narration": "보병 공격력: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 공학 연구소)",
    "reason": ""
   },
   "sta-009": {
@@ -2624,7 +2666,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "탱크: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장)",
+   "narration": "탱크: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장) — 먼저 기술실을 달까요?",
    "reason": ""
   },
   "sta-019": {
@@ -2643,7 +2685,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "토르: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장)",
+   "narration": "토르: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장) — 먼저 기술실을 달까요?",
    "reason": ""
   },
   "sta-021": {
@@ -2651,7 +2693,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "밴시: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 우주공항)",
+   "narration": "밴시: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 우주공항) — 먼저 기술실을 달까요?",
    "reason": ""
   },
   "sta-022": {
@@ -2671,11 +2713,11 @@
    "reason": ""
   },
   "sta-024": {
-   "chosen": "",
+   "chosen": "effect_calldownmule",
    "command": null,
    "commands": [],
    "kind": "ask",
-   "narration": "어떤 명령인지 알 수 없습니다. 다시 말씀해 주세요.",
+   "narration": "뮬: 에너지가 부족합니다",
    "reason": ""
   },
   "sta-025": {
@@ -2733,20 +2775,26 @@
    "source": "catalog_resolver"
   },
   "sta-031": {
-   "chosen": "lift",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "이륙 / 궤도 사령부 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "morph_orbitalcommand",
+   "command": "MORPH_ORBITALCOMMAND",
+   "commands": [
+    "MORPH_ORBITALCOMMAND"
+   ],
+   "kind": "execute",
+   "narration": "변환합니다: 궤도 사령부 (사령부)",
+   "reason": "변환합니다: 궤도 사령부 (사령부)",
+   "source": "catalog_resolver"
   },
   "sta-032": {
-   "chosen": "lift",
-   "command": null,
-   "commands": [],
-   "kind": "ask",
-   "narration": "이륙 / 궤도 사령부 중 어느 것으로 할까요?",
-   "reason": ""
+   "chosen": "morph_orbitalcommand",
+   "command": "MORPH_ORBITALCOMMAND",
+   "commands": [
+    "MORPH_ORBITALCOMMAND"
+   ],
+   "kind": "execute",
+   "narration": "변환합니다: 궤도 사령부 (사령부)",
+   "reason": "변환합니다: 궤도 사령부 (사령부)",
+   "source": "catalog_resolver"
   },
   "sta-033": {
    "chosen": "morph_planetaryfortress",
@@ -3354,14 +3402,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#1",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-037",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3370,14 +3418,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANINFANTRYARMOR#1",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-038",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3434,14 +3482,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANVEHICLEWEAPONS#1",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-042",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3466,14 +3514,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANSHIPWEAPONS#1",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-044",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3530,14 +3578,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_RAPIDFIRELAUNCHERS",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-048",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3770,11 +3818,11 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
+   "acceptable": true,
    "clarified": false,
-   "command": "MORPH_HELLBAT",
-   "correct": false,
-   "exact": false,
+   "command": "MORPH_HELLION",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-063",
    "kind": "execute",
@@ -3783,7 +3831,7 @@
    "tokens": null,
    "unanswered": false,
    "unsafe": false,
-   "wrong_exec": true
+   "wrong_exec": false
   },
   {
    "acceptable": true,
@@ -3946,14 +3994,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_CALLDOWNMULE",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-074",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -3962,14 +4010,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "EFFECT_SUPPLYDROP",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-075",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4362,14 +4410,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "LOAD",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-100",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4410,14 +4458,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "UNLOADALLAT",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-103",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4522,14 +4570,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "TRAIN_SIEGETANK",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-110",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4587,19 +4635,19 @@
   },
   {
    "acceptable": false,
-   "clarified": false,
-   "command": "TRAIN_BANSHEE",
+   "clarified": true,
+   "command": null,
    "correct": false,
    "exact": false,
    "expect": "execute",
    "id": "exp-114",
-   "kind": "execute",
+   "kind": "ask",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
    "unanswered": false,
    "unsafe": false,
-   "wrong_exec": true
+   "wrong_exec": false
   },
   {
    "acceptable": true,
@@ -4730,14 +4778,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-123",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4746,14 +4794,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_ENGINEERINGBAY",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-124",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -4778,14 +4826,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "BUILD_COMMANDCENTER",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "exp-126",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "explicit",
    "tokens": null,
@@ -6170,14 +6218,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#3",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "sta-005",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "state",
    "tokens": null,
@@ -6186,14 +6234,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "RESEARCH_TERRANINFANTRYWEAPONS#1",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "sta-006",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "state",
    "tokens": null,
@@ -6586,14 +6634,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_ORBITALCOMMAND",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "sta-031",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "state",
    "tokens": null,
@@ -6602,14 +6650,14 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": false,
+   "acceptable": true,
+   "clarified": false,
+   "command": "MORPH_ORBITALCOMMAND",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "sta-032",
-   "kind": "ask",
+   "kind": "execute",
    "latency_ms": null,
    "tier": "state",
    "tokens": null,

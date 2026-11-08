@@ -3,29 +3,29 @@
   "all": {
    "acceptable_accuracy": 0.88,
    "ambiguous_rows": 25,
-   "clarification_rate": 0.8,
-   "correct_rate": 0.8933823529411765,
+   "clarification_rate": 0.88,
+   "correct_rate": 0.9007352941176471,
    "exact_accuracy": 0.9301075268817204,
    "exact_rows": 186,
    "execute_rows": 200,
    "n": 272,
-   "unanswered": 3,
-   "unsafe_count": 4,
-   "unsafe_rate": 0.014705882352941176,
+   "unanswered": 2,
+   "unsafe_count": 2,
+   "unsafe_rate": 0.007352941176470588,
    "wrong_exec_rate": 0.025
   },
   "ambiguous": {
    "acceptable_accuracy": null,
    "ambiguous_rows": 25,
-   "clarification_rate": 0.8,
-   "correct_rate": 0.8,
+   "clarification_rate": 0.88,
+   "correct_rate": 0.88,
    "exact_accuracy": null,
    "exact_rows": 0,
    "execute_rows": 0,
    "n": 25,
    "unanswered": 1,
-   "unsafe_count": 4,
-   "unsafe_rate": 0.16,
+   "unsafe_count": 2,
+   "unsafe_rate": 0.08,
    "wrong_exec_rate": null
   },
   "explicit": {
@@ -51,7 +51,7 @@
    "exact_rows": 54,
    "execute_rows": 57,
    "n": 57,
-   "unanswered": 2,
+   "unanswered": 1,
    "unsafe_count": 0,
    "unsafe_rate": 0.0,
    "wrong_exec_rate": 0.07017543859649122
@@ -97,8 +97,8 @@
    "n": 32
   },
   "EFFECT": {
-   "acceptable": 25,
-   "acceptable_accuracy": 0.8333333333333334,
+   "acceptable": 26,
+   "acceptable_accuracy": 0.8666666666666667,
    "n": 30
   },
   "MORPH": {
@@ -112,8 +112,8 @@
    "n": 14
   },
   "RESEARCH": {
-   "acceptable": 62,
-   "acceptable_accuracy": 0.9253731343283582,
+   "acceptable": 61,
+   "acceptable_accuracy": 0.9104477611940298,
    "n": 67
   },
   "TRAIN": {
@@ -127,16 +127,16 @@
   "cost": {
    "calls": 272,
    "latency_n": 272,
-   "latency_p50_ms": 1676.1,
-   "latency_p95_ms": 2983.5,
-   "tokens_mean": 7233.8,
+   "latency_p50_ms": 1671.7,
+   "latency_p95_ms": 3053.0,
+   "tokens_mean": 7232.9,
    "tokens_n": 272
   },
   "kind": "rtx",
   "loadavg_1_5_15": [
-   4.1,
-   3.67,
-   3.41
+   2.18,
+   1.71,
+   1.96
   ],
   "model": "gpt-realtime",
   "rep": 0,
@@ -151,12 +151,12 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1642.4,
+   "latency_ms": 1915.3,
    "narration": "",
    "reason": "",
-   "tokens": 7229,
+   "tokens": 7247,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 원하는지 구체적으로 말씀해 주시겠어요?",
+    "clarification": "어떤 업그레이드를 원하는지 말씀해 주세요. 예를 들어 보병 공격력, 보병 방어력, 차량 공격력 등 구체적으로 알려주세요.",
     "command_layer": "operation",
     "goal": "업그레이드 해줘"
    }
@@ -166,14 +166,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2096.7,
+   "latency_ms": 1448.7,
    "narration": "",
    "reason": "",
-   "tokens": 7229,
+   "tokens": 7225,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 하고 싶은지 구체적으로 알려주시겠어요?",
+    "clarification": "어떤 업그레이드를 진행할까요?",
     "command_layer": "operation",
-    "goal": "업그레이드 관련 명령을 확인"
+    "goal": "어떤 업그레이드를 할지 명확히 확인"
    }
   },
   "amb-003": {
@@ -181,23 +181,24 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2162.6,
+   "latency_ms": 1366.0,
    "narration": "",
    "reason": "",
-   "tokens": 7223,
+   "tokens": 7221,
    "tool_args": {
-    "clarification": "어떤 연구를 시작할지 말씀해 주시겠어요?",
+    "clarification": "어떤 업그레이드를 연구할지 알려주세요.",
     "command_layer": "operation",
-    "goal": "연구 하나 돌려"
+    "goal": "연구 하나 진행하기"
    }
   },
   "amb-004": {
+   "chosen": "",
    "command": null,
    "commands": [],
-   "kind": "execute",
-   "latency_ms": 1290.4,
+   "kind": "ask",
+   "latency_ms": 1494.7,
+   "narration": "어떤 테크를 올릴까요? (예: 군수공장 / 우주공항 / 공학 연구소)",
    "reason": "",
-   "source": "tool_call",
    "tokens": 7220,
    "tool_args": {
     "command_layer": "macro",
@@ -208,33 +209,37 @@
    }
   },
   "amb-005": {
+   "chosen": "",
    "command": null,
    "commands": [],
-   "kind": "execute",
-   "latency_ms": 4678.6,
+   "kind": "ask",
+   "latency_ms": 1668.7,
+   "narration": "어떤 테크를 올릴까요? (예: 군수공장 / 우주공항 / 공학 연구소)",
    "reason": "",
-   "source": "tool_call",
-   "tokens": 7225,
+   "tokens": 7220,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "테크를 올리고 기술 전환을 진행",
+    "goal": "테크를 올려",
     "macro": {
      "task_type": "tech_transition"
     }
    }
   },
   "amb-006": {
-   "chosen": "",
    "command": null,
    "commands": [],
-   "kind": "ask",
-   "latency_ms": 1468.0,
-   "narration": "",
+   "kind": "execute",
+   "latency_ms": 2523.3,
    "reason": "",
-   "tokens": 7222,
+   "source": "tool_call",
+   "tokens": 7237,
    "tool_args": {
-    "clarification": "어떤 유닛이나 업그레이드를 더 강하게 만들지 구체적으로 알려주시겠어요?",
-    "command_layer": "clarification"
+    "command_layer": "macro",
+    "goal": "좀 더 강한 병력을 위해 생산을 강화해",
+    "macro": {
+     "standing_order": true,
+     "task_type": "sustain_production"
+    }
    }
   },
   "amb-007": {
@@ -242,12 +247,12 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1567.5,
+   "latency_ms": 1433.1,
    "narration": "",
    "reason": "",
-   "tokens": 7238,
+   "tokens": 7237,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 눌러야 할지 말씀해 주시겠어요?",
+    "clarification": "어떤 업그레이드를 원하는지 구체적으로 말씀해 주시겠어요?",
     "command_layer": "operation",
     "goal": "업그레이드 하나만 눌러줘"
    }
@@ -257,34 +262,34 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1805.6,
+   "latency_ms": 2056.7,
    "narration": "",
    "reason": "",
-   "tokens": 7254,
+   "tokens": 7255,
    "tool_args": {
-    "clarification": "공격력 업그레이드와 방어력 업그레이드 중 어떤 것을 연구할지 말씀해 주세요.",
+    "clarification": "보병 공격력 업그레이드와 보병 방어력 업그레이드 중 무엇을 할까요?",
     "command_layer": "operation",
-    "goal": "공업이야 방업이야 어느 업그레이드를 할지 선택이 필요함"
+    "goal": "공업이야 방업이야 업그레이드 중 무엇을 할지 확인이 필요함"
    }
   },
   "amb-009": {
-   "chosen": "research_advancedballistics",
-   "command": "RESEARCH_ADVANCEDBALLISTICS",
+   "chosen": "research_rapidfirelaunchers",
+   "command": "RESEARCH_RAPIDFIRELAUNCHERS",
    "commands": [
-    "RESEARCH_ADVANCEDBALLISTICS"
+    "RESEARCH_RAPIDFIRELAUNCHERS"
    ],
    "kind": "execute",
-   "latency_ms": 2035.9,
-   "narration": "연구를 시작합니다: 고급 탄도학 (우주공항 기술실)",
-   "reason": "연구를 시작합니다: 고급 탄도학 (우주공항 기술실)",
+   "latency_ms": 1607.1,
+   "narration": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
+   "reason": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
    "source": "catalog_resolver",
    "tokens": 7232,
    "tool_args": {
     "catalog": {
-     "command_id": "research_advancedballistics"
+     "command_id": "research_rapidfirelaunchers"
     },
     "command_layer": "operation",
-    "goal": "탱크 사거리 업그레이드 연구"
+    "goal": "탱크 사거리 업그레이드"
    }
   },
   "amb-010": {
@@ -292,12 +297,12 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1968.6,
+   "latency_ms": 1608.3,
    "narration": "",
    "reason": "",
-   "tokens": 7272,
+   "tokens": 7267,
    "tool_args": {
-    "clarification": "토르 업그레이드가 무엇을 의미하나요? 특정 업그레이드나 모드 전환을 말씀하시는 건가요, 예를 들어 토르 고충격 모드나 폭발 모드 전환, 또는 다른 연구를 의미하시나요?",
+    "clarification": "토르 업그레이드가 어느 연구를 말하는지 구체적으로 알려주시겠어요? 예를 들어 스마트 서보, 토르 폭발 모드, 고충격 모드 같은 업그레이드 중 어떤 것을 원하시나요?",
     "command_layer": "operation",
     "goal": "토르 업그레이드 해줘"
    }
@@ -309,17 +314,17 @@
     "RESEARCH_RAPIDFIRELAUNCHERS"
    ],
    "kind": "execute",
-   "latency_ms": 1450.2,
+   "latency_ms": 1568.4,
    "narration": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
    "reason": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7234,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_rapidfirelaunchers"
     },
     "command_layer": "operation",
-    "goal": "사이클론 업그레이드를 진행"
+    "goal": "사이클론 업그레이드 해줘"
    }
   },
   "amb-012": {
@@ -329,7 +334,7 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#3"
    ],
    "kind": "execute",
-   "latency_ms": 1731.5,
+   "latency_ms": 1834.6,
    "narration": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -339,7 +344,7 @@
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 업그레이드 진행"
+    "goal": "보병 공격력 업그레이드를 진행"
    }
   },
   "amb-013": {
@@ -349,32 +354,31 @@
     "RESEARCH_TERRANINFANTRYARMOR#2"
    ],
    "kind": "execute",
-   "latency_ms": 1303.9,
+   "latency_ms": 1295.8,
    "narration": "연구를 시작합니다: 보병 방어력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7230,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryarmor"
     },
     "command_layer": "operation",
-    "goal": "보병 방어력 업그레이드를 연구"
+    "goal": "보병 방어력 업그레이드"
    }
   },
   "amb-014": {
-   "command": "BEHAVIOR_CLOAKON@GHOST",
-   "commands": [
-    "BEHAVIOR_CLOAKON@GHOST"
-   ],
-   "kind": "execute",
-   "latency_ms": 12910.6,
+   "chosen": "",
+   "command": null,
+   "commands": [],
+   "kind": "ask",
+   "latency_ms": 1449.0,
+   "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
    "reason": "",
-   "source": "tool_call",
-   "tokens": 7223,
+   "tokens": 7224,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "클로킹",
+    "goal": "클로킹 사용",
     "micro": [
      {
       "ability": "ghost_cloak"
@@ -387,14 +391,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2250.5,
+   "latency_ms": 1607.5,
    "narration": "",
    "reason": "",
-   "tokens": 7254,
+   "tokens": 7237,
    "tool_args": {
-    "clarification": "어떤 유닛의 어떤 모드를 바꿀지 알려주세요. 예: 해방선 전투 모드, 토르 고충격 모드, 바이킹 착륙 등.",
+    "clarification": "어떤 유닛의 모드를 바꿀지 말씀해 주세요. 예: 토르, 바이킹, 해방선 등.",
     "command_layer": "operation",
-    "goal": "유닛의 모드 전환"
+    "goal": "모드 변경"
    }
   },
   "amb-016": {
@@ -402,12 +406,12 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 3064.6,
+   "latency_ms": 1417.2,
    "narration": "",
    "reason": "",
-   "tokens": 7238,
+   "tokens": 7231,
    "tool_args": {
-    "clarification": "어떤 애드온을 달지 말씀해 주시겠어요? 기술실이나 반응로 같은 구체적인 종류가 필요합니다.",
+    "clarification": "어떤 애드온을 달지 알려주세요: 리액터인가요, 기술실인가요?",
     "command_layer": "operation",
     "goal": "애드온 달아"
    }
@@ -417,14 +421,13 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1318.9,
+   "latency_ms": 1233.7,
    "narration": "",
    "reason": "",
-   "tokens": 7223,
+   "tokens": 7212,
    "tool_args": {
     "clarification": "어떤 건물을 지을지 말씀해 주시겠어요?",
-    "command_layer": "macro",
-    "goal": "건물 하나 지어"
+    "command_layer": "clarification"
    }
   },
   "amb-018": {
@@ -432,14 +435,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1446.0,
+   "latency_ms": 1305.4,
    "narration": "",
    "reason": "",
-   "tokens": 7237,
+   "tokens": 7232,
    "tool_args": {
-    "clarification": "어떤 유닛을 뽑을지 말씀해 주시겠어요?",
+    "clarification": "어떤 유닛을 뽑을지 알려주세요.",
     "command_layer": "operation",
-    "goal": "어떤 유닛을 뽑을지 확인 필요"
+    "goal": "어떤 유닛을 뽑을지 확인"
    }
   },
   "amb-019": {
@@ -447,14 +450,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1614.6,
+   "latency_ms": 1987.8,
    "narration": "",
    "reason": "",
    "tokens": 7227,
    "tool_args": {
-    "clarification": "어떤 연구를 해야 할지 명확히 알려주세요.",
+    "clarification": "어떤 업그레이드를 연구할지 다시 알려주세요.",
     "command_layer": "operation",
-    "goal": "어떤 연구를 해야 할지 명확히 알려주세요."
+    "goal": "어떤 업그레이드를 연구할지 다시 알려주세요."
    }
   },
   "amb-020": {
@@ -462,14 +465,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1244.9,
+   "latency_ms": 4601.7,
    "narration": "",
    "reason": "",
-   "tokens": 7216,
+   "tokens": 7230,
    "tool_args": {
-    "clarification": "어떤 스킬을 사용할지 알려주세요.",
-    "command_layer": "micro",
-    "goal": "스킬 사용"
+    "clarification": "어떤 스킬을 사용하길 원하시나요?",
+    "command_layer": "clarification",
+    "goal": "사용자가 요청한 스킬이 무엇인지 명확히 확인하기"
    }
   },
   "amb-021": {
@@ -477,21 +480,21 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2376.0,
+   "latency_ms": 1353.2,
    "narration": "",
    "reason": "",
-   "tokens": 7237,
+   "tokens": 7222,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 원하시나요? 예를 들어 보병 공격력, 방어력, 스팀팩 등이 있습니다.",
+    "clarification": "어떤 업그레이드를 할지 말씀해 주세요.",
     "command_layer": "operation",
-    "goal": "업그레이드를 수행해줘"
+    "goal": "업그레이드를 진행할 내용을 확인"
    }
   },
   "amb-022": {
    "command": null,
    "commands": [],
    "kind": "none",
-   "latency_ms": 1983.8,
+   "latency_ms": 2627.4,
    "reason": "invalid_tool_call: operations[0] reinforce needs the unit counts the user spoke.",
    "tokens": 7252,
    "tool_args": {
@@ -511,14 +514,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1657.0,
+   "latency_ms": 1707.5,
    "narration": "",
    "reason": "",
-   "tokens": 7233,
+   "tokens": 7235,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 진행할지 구체적으로 말씀해 주시겠어요?",
+    "clarification": "공업, 방업, 혹은 다른 어떤 업그레이드를 말하는 건가요?",
     "command_layer": "operation",
-    "goal": "어떤 업그레이드인지 확인이 필요함"
+    "goal": "업그레이드 명령을 확인하기 위해 질문 필요"
    }
   },
   "amb-024": {
@@ -526,14 +529,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1757.8,
+   "latency_ms": 1699.7,
    "narration": "",
    "reason": "",
-   "tokens": 7229,
+   "tokens": 7231,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 하길 원하시나요?",
+    "clarification": "어떤 업그레이드를 진행할지 알려주시겠어요?",
     "command_layer": "operation",
-    "goal": "어떤 업그레이드를 할지 물어보기"
+    "goal": "어떤 업그레이드인지 확인이 필요함"
    }
   },
   "amb-025": {
@@ -541,14 +544,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1641.0,
+   "latency_ms": 1561.1,
    "narration": "",
    "reason": "",
-   "tokens": 7241,
+   "tokens": 7230,
    "tool_args": {
-    "clarification": "어떤 에너지 스킬을 사용할지 구체적으로 말씀해 주시겠어요?",
-    "command_layer": "clarification",
-    "goal": "에너지 스킬 사용 관련 명령을 명확히 해주세요."
+    "clarification": "어떤 에너지 스킬을 사용해야 하나요?",
+    "command_layer": "operation",
+    "goal": "어떤 에너지 스킬을 사용할지 확인 필요"
    }
   },
   "exp-001": {
@@ -558,7 +561,7 @@
     "TRAIN_SCV"
    ],
    "kind": "execute",
-   "latency_ms": 1753.0,
+   "latency_ms": 1690.3,
    "narration": "생산합니다: SCV (사령부)",
    "reason": "생산합니다: SCV (사령부)",
    "source": "catalog_resolver",
@@ -578,7 +581,7 @@
     "TRAIN_MARINE"
    ],
    "kind": "execute",
-   "latency_ms": 1512.7,
+   "latency_ms": 1927.3,
    "narration": "생산합니다: 해병 (병영)",
    "reason": "생산합니다: 해병 (병영)",
    "source": "catalog_resolver",
@@ -598,17 +601,17 @@
     "TRAIN_MARAUDER"
    ],
    "kind": "execute",
-   "latency_ms": 2258.0,
+   "latency_ms": 2965.3,
    "narration": "생산합니다: 불곰 (병영)",
    "reason": "생산합니다: 불곰 (병영)",
    "source": "catalog_resolver",
-   "tokens": 7226,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "train_marauder"
     },
     "command_layer": "operation",
-    "goal": "불곰 훈련"
+    "goal": "불곰 생산"
    }
   },
   "exp-004": {
@@ -618,17 +621,17 @@
     "TRAIN_REAPER"
    ],
    "kind": "execute",
-   "latency_ms": 1699.6,
+   "latency_ms": 3035.2,
    "narration": "생산합니다: 사신 (병영)",
    "reason": "생산합니다: 사신 (병영)",
    "source": "catalog_resolver",
-   "tokens": 7220,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "train_reaper"
     },
     "command_layer": "operation",
-    "goal": "리퍼 생산해"
+    "goal": "리퍼 유닛을 생산해"
    }
   },
   "exp-005": {
@@ -638,7 +641,7 @@
     "TRAIN_GHOST"
    ],
    "kind": "execute",
-   "latency_ms": 1997.6,
+   "latency_ms": 1468.3,
    "narration": "생산합니다: 유령 (병영)",
    "reason": "생산합니다: 유령 (병영)",
    "source": "catalog_resolver",
@@ -648,7 +651,7 @@
      "command_id": "train_ghost"
     },
     "command_layer": "operation",
-    "goal": "유령을 생산해"
+    "goal": "유령 생산 명령"
    }
   },
   "exp-006": {
@@ -658,7 +661,7 @@
     "TRAIN_HELLION"
    ],
    "kind": "execute",
-   "latency_ms": 1736.1,
+   "latency_ms": 1224.3,
    "narration": "생산합니다: 화염차 (군수공장)",
    "reason": "생산합니다: 화염차 (군수공장)",
    "source": "catalog_resolver",
@@ -677,17 +680,18 @@
     "TRAIN_HELLION"
    ],
    "kind": "execute",
-   "latency_ms": 1701.6,
+   "latency_ms": 1907.8,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7241,
+   "tokens": 7247,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "화염기갑병 생산하기",
+    "goal": "화염기갑병 생산",
     "macro": {
      "production_targets": [
       "TERRAN_HELLION"
      ],
+     "standing_order": true,
      "task_type": "sustain_production"
     }
    }
@@ -699,17 +703,17 @@
     "TRAIN_SIEGETANK"
    ],
    "kind": "execute",
-   "latency_ms": 1519.9,
+   "latency_ms": 2008.4,
    "narration": "생산합니다: 탱크 (군수공장)",
    "reason": "생산합니다: 탱크 (군수공장)",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "train_siegetank"
     },
     "command_layer": "operation",
-    "goal": "시즈탱크를 생산해"
+    "goal": "시즈탱크 생산"
    }
   },
   "exp-009": {
@@ -719,17 +723,17 @@
     "TRAIN_CYCLONE"
    ],
    "kind": "execute",
-   "latency_ms": 1726.6,
+   "latency_ms": 2629.9,
    "narration": "생산합니다: 사이클론 (군수공장)",
    "reason": "생산합니다: 사이클론 (군수공장)",
    "source": "catalog_resolver",
-   "tokens": 7224,
+   "tokens": 7225,
    "tool_args": {
     "catalog": {
      "command_id": "train_cyclone"
     },
     "command_layer": "operation",
-    "goal": "사이클론 생산"
+    "goal": "사이클론 생산해"
    }
   },
   "exp-010": {
@@ -739,7 +743,7 @@
     "TRAIN_THOR"
    ],
    "kind": "execute",
-   "latency_ms": 1612.4,
+   "latency_ms": 1683.5,
    "narration": "생산합니다: 토르 (군수공장)",
    "reason": "생산합니다: 토르 (군수공장)",
    "source": "catalog_resolver",
@@ -749,7 +753,7 @@
      "command_id": "train_thor"
     },
     "command_layer": "operation",
-    "goal": "토르 유닛 생산"
+    "goal": "토르 생산"
    }
   },
   "exp-011": {
@@ -758,18 +762,17 @@
     "TRAIN_WIDOWMINE"
    ],
    "kind": "execute",
-   "latency_ms": 1780.0,
+   "latency_ms": 2794.4,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7251,
+   "tokens": 7245,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "땅거미 지뢰 생산",
+    "goal": "땅거미 지뢰 생산하기",
     "macro": {
      "production_targets": [
       "TERRAN_WIDOWMINE"
      ],
-     "standing_order": true,
      "task_type": "sustain_production"
     }
    }
@@ -781,37 +784,39 @@
     "TRAIN_MEDIVAC"
    ],
    "kind": "execute",
-   "latency_ms": 2905.0,
+   "latency_ms": 1398.8,
    "narration": "생산합니다: 의료선 (우주공항)",
    "reason": "생산합니다: 의료선 (우주공항)",
    "source": "catalog_resolver",
-   "tokens": 7226,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "train_medivac"
     },
     "command_layer": "operation",
-    "goal": "의료선 생산 지시"
+    "goal": "의료선 뽑아"
    }
   },
   "exp-013": {
-   "chosen": "train_vikingfighter",
    "command": "TRAIN_VIKINGFIGHTER",
    "commands": [
     "TRAIN_VIKINGFIGHTER"
    ],
    "kind": "execute",
-   "latency_ms": 1372.4,
-   "narration": "생산합니다: 바이킹 (우주공항)",
-   "reason": "생산합니다: 바이킹 (우주공항)",
-   "source": "catalog_resolver",
-   "tokens": 7222,
+   "latency_ms": 1689.0,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 7247,
    "tool_args": {
-    "catalog": {
-     "command_id": "train_vikingfighter"
-    },
-    "command_layer": "operation",
-    "goal": "바이킹 생산해"
+    "command_layer": "macro",
+    "goal": "바이킹 생산 시작",
+    "macro": {
+     "production_targets": [
+      "TERRAN_VIKINGFIGHTER"
+     ],
+     "standing_order": true,
+     "task_type": "sustain_production"
+    }
    }
   },
   "exp-014": {
@@ -821,17 +826,17 @@
     "TRAIN_LIBERATOR"
    ],
    "kind": "execute",
-   "latency_ms": 1304.7,
+   "latency_ms": 3967.4,
    "narration": "생산합니다: 해방선 (우주공항)",
    "reason": "생산합니다: 해방선 (우주공항)",
    "source": "catalog_resolver",
-   "tokens": 7221,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "train_liberator"
     },
     "command_layer": "operation",
-    "goal": "해방선 생산"
+    "goal": "해방선 생산해"
    }
   },
   "exp-015": {
@@ -841,17 +846,17 @@
     "TRAIN_BANSHEE"
    ],
    "kind": "execute",
-   "latency_ms": 1540.6,
+   "latency_ms": 1453.9,
    "narration": "생산합니다: 밴시 (우주공항)",
    "reason": "생산합니다: 밴시 (우주공항)",
    "source": "catalog_resolver",
-   "tokens": 7224,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "train_banshee"
     },
     "command_layer": "operation",
-    "goal": "밴시 생산"
+    "goal": "밴시 훈련 시작"
    }
   },
   "exp-016": {
@@ -861,17 +866,17 @@
     "TRAIN_RAVEN"
    ],
    "kind": "execute",
-   "latency_ms": 2599.2,
+   "latency_ms": 2451.9,
    "narration": "생산합니다: 밤까마귀 (우주공항)",
    "reason": "생산합니다: 밤까마귀 (우주공항)",
    "source": "catalog_resolver",
-   "tokens": 7222,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "train_raven"
     },
     "command_layer": "operation",
-    "goal": "레이븐 생산 지시"
+    "goal": "레이븐 생산 명령"
    }
   },
   "exp-017": {
@@ -881,17 +886,17 @@
     "TRAIN_BATTLECRUISER"
    ],
    "kind": "execute",
-   "latency_ms": 1240.7,
+   "latency_ms": 1417.0,
    "narration": "생산합니다: 전투순양함 (우주공항)",
    "reason": "생산합니다: 전투순양함 (우주공항)",
    "source": "catalog_resolver",
-   "tokens": 7230,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "train_battlecruiser"
     },
     "command_layer": "operation",
-    "goal": "전투순양함 생산"
+    "goal": "전투순양함 뽑아"
    }
   },
   "exp-018": {
@@ -900,10 +905,10 @@
     "BUILD_SUPPLYDEPOT"
    ],
    "kind": "execute",
-   "latency_ms": 1544.3,
+   "latency_ms": 1662.2,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7247,
+   "tokens": 7252,
    "tool_args": {
     "command_layer": "macro",
     "goal": "보급고 건설",
@@ -923,13 +928,13 @@
     "BUILD_REFINERY"
    ],
    "kind": "execute",
-   "latency_ms": 1709.6,
+   "latency_ms": 2056.3,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7251,
+   "tokens": 7252,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "정제소 지어",
+    "goal": "정제소를 건설",
     "macro": {
      "building_tasks": [
       {
@@ -941,43 +946,49 @@
    }
   },
   "exp-020": {
-   "chosen": "build_commandcenter",
    "command": "BUILD_COMMANDCENTER",
    "commands": [
     "BUILD_COMMANDCENTER"
    ],
    "kind": "execute",
-   "latency_ms": 1635.9,
-   "narration": "건설합니다: 사령부",
-   "reason": "건설합니다: 사령부",
-   "source": "catalog_resolver",
-   "tokens": 7221,
+   "latency_ms": 2034.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 7251,
    "tool_args": {
-    "catalog": {
-     "command_id": "build_commandcenter"
-    },
-    "command_layer": "operation",
-    "goal": "사령부 건설"
+    "command_layer": "macro",
+    "goal": "사령부를 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_COMMANDCENTER"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
    }
   },
   "exp-021": {
-   "chosen": "build_barracks",
    "command": "BUILD_BARRACKS",
    "commands": [
     "BUILD_BARRACKS"
    ],
    "kind": "execute",
-   "latency_ms": 1603.3,
-   "narration": "건설합니다: 병영",
-   "reason": "건설합니다: 병영",
-   "source": "catalog_resolver",
-   "tokens": 7221,
+   "latency_ms": 1938.8,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 7243,
    "tool_args": {
-    "catalog": {
-     "command_id": "build_barracks"
-    },
     "command_layer": "macro",
-    "goal": "병영 지어"
+    "goal": "병영을 건설",
+    "macro": {
+     "building_tasks": [
+      {
+       "building_type": "TERRAN_BARRACKS"
+      }
+     ],
+     "task_type": "tech_transition"
+    }
    }
   },
   "exp-022": {
@@ -987,17 +998,17 @@
     "BUILD_ENGINEERINGBAY"
    ],
    "kind": "execute",
-   "latency_ms": 1696.1,
+   "latency_ms": 2015.6,
    "narration": "건설합니다: 공학 연구소",
    "reason": "건설합니다: 공학 연구소",
    "source": "catalog_resolver",
-   "tokens": 7225,
+   "tokens": 7226,
    "tool_args": {
     "catalog": {
      "command_id": "build_engineeringbay"
     },
     "command_layer": "operation",
-    "goal": "공학 연구소 건설"
+    "goal": "공학 연구소를 건설"
    }
   },
   "exp-023": {
@@ -1007,17 +1018,17 @@
     "BUILD_BUNKER"
    ],
    "kind": "execute",
-   "latency_ms": 2132.2,
+   "latency_ms": 2749.8,
    "narration": "건설합니다: 벙커",
    "reason": "건설합니다: 벙커",
    "source": "catalog_resolver",
-   "tokens": 7224,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "build_bunker"
     },
     "command_layer": "operation",
-    "goal": "벙커를 하나 지어"
+    "goal": "벙커를 건설"
    }
   },
   "exp-024": {
@@ -1027,7 +1038,7 @@
     "BUILD_MISSILETURRET"
    ],
    "kind": "execute",
-   "latency_ms": 1651.9,
+   "latency_ms": 2004.7,
    "narration": "건설합니다: 미사일 터렛",
    "reason": "건설합니다: 미사일 터렛",
    "source": "catalog_resolver",
@@ -1037,7 +1048,7 @@
      "command_id": "build_missileturret"
     },
     "command_layer": "operation",
-    "goal": "미사일 터렛 지어"
+    "goal": "미사일 터렛 하나 건설"
    }
   },
   "exp-025": {
@@ -1047,17 +1058,17 @@
     "BUILD_SENSORTOWER"
    ],
    "kind": "execute",
-   "latency_ms": 1677.7,
+   "latency_ms": 1699.8,
    "narration": "건설합니다: 감시탑",
    "reason": "건설합니다: 감시탑",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "build_sensortower"
     },
     "command_layer": "operation",
-    "goal": "감시탑을 건설해"
+    "goal": "감시탑을 지어"
    }
   },
   "exp-026": {
@@ -1066,10 +1077,10 @@
     "BUILD_FACTORY"
    ],
    "kind": "execute",
-   "latency_ms": 1445.3,
+   "latency_ms": 1561.0,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7251,
+   "tokens": 7241,
    "tool_args": {
     "command_layer": "macro",
     "goal": "군수공장 건설",
@@ -1090,11 +1101,11 @@
     "BUILD_GHOSTACADEMY"
    ],
    "kind": "execute",
-   "latency_ms": 1378.8,
+   "latency_ms": 1377.3,
    "narration": "건설합니다: 유령 사관학교",
    "reason": "건설합니다: 유령 사관학교",
    "source": "catalog_resolver",
-   "tokens": 7229,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "build_ghostacademy"
@@ -1104,27 +1115,23 @@
    }
   },
   "exp-028": {
+   "chosen": "build_armory",
    "command": "BUILD_ARMORY",
    "commands": [
     "BUILD_ARMORY"
    ],
    "kind": "execute",
-   "latency_ms": 1743.0,
-   "reason": "",
-   "source": "tool_call",
-   "tokens": 7260,
+   "latency_ms": 1308.0,
+   "narration": "건설합니다: 무기고",
+   "reason": "건설합니다: 무기고",
+   "source": "catalog_resolver",
+   "tokens": 7223,
    "tool_args": {
-    "command_layer": "macro",
-    "goal": "무기고 건물을 하나 건설",
-    "macro": {
-     "building_tasks": [
-      {
-       "building_type": "TERRAN_ARMORY",
-       "count": 1
-      }
-     ],
-     "task_type": "tech_transition"
-    }
+    "catalog": {
+     "command_id": "build_armory"
+    },
+    "command_layer": "operation",
+    "goal": "무기고를 건설"
    }
   },
   "exp-029": {
@@ -1133,13 +1140,13 @@
     "BUILD_STARPORT"
    ],
    "kind": "execute",
-   "latency_ms": 1589.5,
+   "latency_ms": 1868.7,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7253,
+   "tokens": 7245,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "우주공항을 건설",
+    "goal": "우주공항 건설",
     "macro": {
      "building_tasks": [
       {
@@ -1157,17 +1164,17 @@
     "BUILD_FUSIONCORE"
    ],
    "kind": "execute",
-   "latency_ms": 1318.5,
+   "latency_ms": 1643.6,
    "narration": "건설합니다: 융합로",
    "reason": "건설합니다: 융합로",
    "source": "catalog_resolver",
-   "tokens": 7226,
+   "tokens": 7225,
    "tool_args": {
     "catalog": {
      "command_id": "build_fusioncore"
     },
     "command_layer": "operation",
-    "goal": "융합로 건물을 하나 지어"
+    "goal": "융합로 건물을 건설"
    }
   },
   "exp-031": {
@@ -1175,16 +1182,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1726.4,
+   "latency_ms": 1368.8,
    "narration": "기술실: 이미 애드온이 붙어 있습니다",
    "reason": "",
-   "tokens": 7225,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "build_techlab"
     },
     "command_layer": "operation",
-    "goal": "기술실 건설 명령"
+    "goal": "기술실 달아"
    }
   },
   "exp-032": {
@@ -1192,7 +1199,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2856.8,
+   "latency_ms": 1521.4,
    "narration": "리액터: 이미 애드온이 붙어 있습니다",
    "reason": "",
    "tokens": 7222,
@@ -1211,17 +1218,17 @@
     "BUILD_NUKE"
    ],
    "kind": "execute",
-   "latency_ms": 2058.7,
+   "latency_ms": 1884.5,
    "narration": "건설합니다: 핵 장전",
    "reason": "건설합니다: 핵 장전",
    "source": "catalog_resolver",
-   "tokens": 7220,
+   "tokens": 7218,
    "tool_args": {
     "catalog": {
      "command_id": "build_nuke"
     },
     "command_layer": "operation",
-    "goal": "핵을 만들기"
+    "goal": "핵 만들어"
    }
   },
   "exp-034": {
@@ -1231,11 +1238,11 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1557.0,
+   "latency_ms": 2883.4,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7223,
+   "tokens": 7218,
    "tool_args": {
     "catalog": {
      "command_id": "research_stimpack"
@@ -1251,17 +1258,17 @@
     "RESEARCH_COMBATSHIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1342.2,
+   "latency_ms": 2222.5,
    "narration": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "reason": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "research_combatshield"
     },
     "command_layer": "operation",
-    "goal": "전투 방패 업그레이드 진행"
+    "goal": "전투 방패 업그레이드 연구 수행"
    }
   },
   "exp-036": {
@@ -1271,7 +1278,7 @@
     "RESEARCH_CONCUSSIVESHELLS"
    ],
    "kind": "execute",
-   "latency_ms": 1842.6,
+   "latency_ms": 1331.1,
    "narration": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "reason": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "source": "catalog_resolver",
@@ -1291,17 +1298,17 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 1880.1,
+   "latency_ms": 2587.5,
    "narration": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7236,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 무기 업그레이드 연구 시작"
+    "goal": "보병 무기 업그레이드 연구 진행"
    }
   },
   "exp-038": {
@@ -1311,7 +1318,7 @@
     "RESEARCH_TERRANINFANTRYARMOR#1"
    ],
    "kind": "execute",
-   "latency_ms": 3044.6,
+   "latency_ms": 1533.9,
    "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -1331,17 +1338,17 @@
     "RESEARCH_TERRANSTRUCTUREARMORUPGRADE"
    ],
    "kind": "execute",
-   "latency_ms": 1343.0,
+   "latency_ms": 1924.4,
    "narration": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "reason": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7236,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranstructurearmorupgrade"
     },
     "command_layer": "operation",
-    "goal": "건물 장갑 업그레이드 연구 진행"
+    "goal": "건물 장갑 업그레이드 연구"
    }
   },
   "exp-040": {
@@ -1351,7 +1358,7 @@
     "RESEARCH_HISECAUTOTRACKING"
    ],
    "kind": "execute",
-   "latency_ms": 1412.7,
+   "latency_ms": 1492.2,
    "narration": "연구를 시작합니다: 고보안 자동 추적 (공학 연구소)",
    "reason": "연구를 시작합니다: 고보안 자동 추적 (공학 연구소)",
    "source": "catalog_resolver",
@@ -1371,7 +1378,7 @@
     "RESEARCH_NEOSTEELFRAME"
    ],
    "kind": "execute",
-   "latency_ms": 2345.4,
+   "latency_ms": 4391.0,
    "narration": "연구를 시작합니다: 네오스틸 프레임 (공학 연구소)",
    "reason": "연구를 시작합니다: 네오스틸 프레임 (공학 연구소)",
    "source": "catalog_resolver",
@@ -1391,7 +1398,7 @@
     "RESEARCH_TERRANVEHICLEWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 2156.6,
+   "latency_ms": 1420.0,
    "narration": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "source": "catalog_resolver",
@@ -1411,17 +1418,17 @@
     "RESEARCH_TERRANVEHICLEANDSHIPPLATING#1"
    ],
    "kind": "execute",
-   "latency_ms": 1499.8,
+   "latency_ms": 1791.8,
    "narration": "연구를 시작합니다: 차량 방어력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 차량 방어력 1단계 (무기고)",
    "source": "catalog_resolver",
-   "tokens": 7240,
+   "tokens": 7242,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranvehicleandshipplating"
     },
     "command_layer": "operation",
-    "goal": "차량 함선 장갑 업그레이드 연구"
+    "goal": "차량 함선 장갑 업그레이드 연구 진행"
    }
   },
   "exp-044": {
@@ -1431,7 +1438,7 @@
     "RESEARCH_TERRANSHIPWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 1295.9,
+   "latency_ms": 2026.4,
    "narration": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
    "source": "catalog_resolver",
@@ -1441,7 +1448,7 @@
      "command_id": "research_terranshipweapons"
     },
     "command_layer": "operation",
-    "goal": "함선 무기 업그레이드 연구 진행"
+    "goal": "함선 무기 업그레이드 연구 시작"
    }
   },
   "exp-045": {
@@ -1451,17 +1458,17 @@
     "RESEARCH_DRILLINGCLAWS"
    ],
    "kind": "execute",
-   "latency_ms": 1504.8,
+   "latency_ms": 1528.4,
    "narration": "연구를 시작합니다: 드릴 발톱 (군수공장 기술실)",
    "reason": "연구를 시작합니다: 드릴 발톱 (군수공장 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "research_drillingclaws"
     },
     "command_layer": "operation",
-    "goal": "드릴링 클로 연구 진행"
+    "goal": "드릴링 클로 업그레이드 진행"
    }
   },
   "exp-046": {
@@ -1471,7 +1478,7 @@
     "RESEARCH_SMARTSERVOS"
    ],
    "kind": "execute",
-   "latency_ms": 1314.7,
+   "latency_ms": 1482.8,
    "narration": "연구를 시작합니다: 스마트 서보 (군수공장 기술실)",
    "reason": "연구를 시작합니다: 스마트 서보 (군수공장 기술실)",
    "source": "catalog_resolver",
@@ -1481,7 +1488,7 @@
      "command_id": "research_smartservos"
     },
     "command_layer": "operation",
-    "goal": "스마트 서보 연구 진행"
+    "goal": "스마트 서보 연구 시작"
    }
   },
   "exp-047": {
@@ -1491,17 +1498,17 @@
     "RESEARCH_INFERNALPREIGNITER"
    ],
    "kind": "execute",
-   "latency_ms": 1710.2,
+   "latency_ms": 1314.0,
    "narration": "연구를 시작합니다: 화염 예열기 (군수공장 기술실)",
    "reason": "연구를 시작합니다: 화염 예열기 (군수공장 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7240,
+   "tokens": 7239,
    "tool_args": {
     "catalog": {
      "command_id": "research_infernalpreigniter"
     },
     "command_layer": "operation",
-    "goal": "인페르날 프리이그나이터 연구 시작"
+    "goal": "인페르날 프리이그나이터 연구 진행"
    }
   },
   "exp-048": {
@@ -1511,17 +1518,17 @@
     "RESEARCH_RAPIDFIRELAUNCHERS"
    ],
    "kind": "execute",
-   "latency_ms": 1380.1,
+   "latency_ms": 1716.5,
    "narration": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
    "reason": "연구를 시작합니다: 사이클론 속사 (군수공장 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7238,
    "tool_args": {
     "catalog": {
      "command_id": "research_rapidfirelaunchers"
     },
     "command_layer": "operation",
-    "goal": "래피드 파이어 런처 연구 진행"
+    "goal": "래피드 파이어 런처 업그레이드 진행"
    }
   },
   "exp-049": {
@@ -1531,11 +1538,11 @@
     "RESEARCH_BANSHEECLOAKINGFIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1910.9,
+   "latency_ms": 1283.3,
    "narration": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7226,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "research_bansheecloakingfield"
@@ -1551,11 +1558,11 @@
     "RESEARCH_BANSHEEHYPERFLIGHTROTORS"
    ],
    "kind": "execute",
-   "latency_ms": 1553.0,
+   "latency_ms": 1297.2,
    "narration": "연구를 시작합니다: 밴시 속도 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 속도 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7238,
+   "tokens": 7237,
    "tool_args": {
     "catalog": {
      "command_id": "research_bansheehyperflightrotors"
@@ -1571,7 +1578,7 @@
     "RESEARCH_ADVANCEDBALLISTICS"
    ],
    "kind": "execute",
-   "latency_ms": 1641.3,
+   "latency_ms": 1585.6,
    "narration": "연구를 시작합니다: 고급 탄도학 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 고급 탄도학 (우주공항 기술실)",
    "source": "catalog_resolver",
@@ -1581,7 +1588,7 @@
      "command_id": "research_advancedballistics"
     },
     "command_layer": "operation",
-    "goal": "고급 탄도학 연구 진행"
+    "goal": "고급 탄도학 연구 시작"
    }
   },
   "exp-052": {
@@ -1591,17 +1598,17 @@
     "RESEARCH_ENHANCEDMUNITIONS"
    ],
    "kind": "execute",
-   "latency_ms": 1295.5,
+   "latency_ms": 1376.4,
    "narration": "연구를 시작합니다: 레이븐 강화 탄약 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 레이븐 강화 탄약 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7229,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "research_enhancedmunitions"
     },
     "command_layer": "operation",
-    "goal": "레이븐 강화 탄약 연구 시작"
+    "goal": "강화 탄약 연구 진행"
    }
   },
   "exp-053": {
@@ -1611,11 +1618,11 @@
     "RESEARCH_HIGHCAPACITYFUELTANKS"
    ],
    "kind": "execute",
-   "latency_ms": 1314.0,
+   "latency_ms": 2628.3,
    "narration": "연구를 시작합니다: 고용량 연료 탱크 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 고용량 연료 탱크 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7230,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_highcapacityfueltanks"
@@ -1631,17 +1638,17 @@
     "RESEARCH_RAVENCORVIDREACTOR"
    ],
    "kind": "execute",
-   "latency_ms": 1676.8,
+   "latency_ms": 1955.4,
    "narration": "연구를 시작합니다: 레이븐 에너지 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 레이븐 에너지 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7245,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_ravencorvidreactor"
     },
     "command_layer": "operation",
-    "goal": "레이븐 에너지 업그레이드인 코르비드 리액터 연구 진행"
+    "goal": "코르비드 리액터 연구 진행"
    }
   },
   "exp-055": {
@@ -1651,17 +1658,17 @@
     "RESEARCH_RAVENRECALIBRATEDEXPLOSIVES"
    ],
    "kind": "execute",
-   "latency_ms": 1584.1,
+   "latency_ms": 1970.3,
    "narration": "연구를 시작합니다: 재조정 폭약 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 재조정 폭약 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7237,
    "tool_args": {
     "catalog": {
      "command_id": "research_ravenrecalibratedexplosives"
     },
     "command_layer": "operation",
-    "goal": "재조정 폭발물 연구 시작"
+    "goal": "재조정 폭발물 연구 명령 실행"
    }
   },
   "exp-056": {
@@ -1671,7 +1678,7 @@
     "RESEARCH_PERSONALCLOAKING"
    ],
    "kind": "execute",
-   "latency_ms": 1507.8,
+   "latency_ms": 1435.2,
    "narration": "연구를 시작합니다: 유령 은신 (유령 사관학교)",
    "reason": "연구를 시작합니다: 유령 은신 (유령 사관학교)",
    "source": "catalog_resolver",
@@ -1681,7 +1688,7 @@
      "command_id": "research_personalcloaking"
     },
     "command_layer": "operation",
-    "goal": "유령 은신 연구 시작"
+    "goal": "유령 은신 연구 실행"
    }
   },
   "exp-057": {
@@ -1691,7 +1698,7 @@
     "RESEARCH_BATTLECRUISERWEAPONREFIT"
    ],
    "kind": "execute",
-   "latency_ms": 2058.8,
+   "latency_ms": 4366.2,
    "narration": "연구를 시작합니다: 야마토 (융합로)",
    "reason": "연구를 시작합니다: 야마토 (융합로)",
    "source": "catalog_resolver",
@@ -1701,7 +1708,7 @@
      "command_id": "research_battlecruiserweaponrefit"
     },
     "command_layer": "operation",
-    "goal": "전투순양함 무기 개조 연구 진행"
+    "goal": "전투순양함 무기 개조 연구 시작"
    }
   },
   "exp-058": {
@@ -1711,7 +1718,7 @@
     "MORPH_ORBITALCOMMAND"
    ],
    "kind": "execute",
-   "latency_ms": 1407.2,
+   "latency_ms": 1308.9,
    "narration": "변환합니다: 궤도 사령부 (사령부)",
    "reason": "변환합니다: 궤도 사령부 (사령부)",
    "source": "catalog_resolver",
@@ -1731,7 +1738,7 @@
     "MORPH_PLANETARYFORTRESS"
    ],
    "kind": "execute",
-   "latency_ms": 1584.7,
+   "latency_ms": 1832.6,
    "narration": "변환합니다: 행성 요새 (사령부)",
    "reason": "변환합니다: 행성 요새 (사령부)",
    "source": "catalog_resolver",
@@ -1750,7 +1757,7 @@
     "MORPH_SIEGEMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1800.1,
+   "latency_ms": 1892.5,
    "reason": "",
    "source": "fast_path_override",
    "tokens": 7246,
@@ -1773,19 +1780,16 @@
     "MORPH_UNSIEGE"
    ],
    "kind": "execute",
-   "latency_ms": 1611.1,
+   "latency_ms": 2757.6,
    "reason": "",
    "source": "fast_path_override",
-   "tokens": 7241,
+   "tokens": 7226,
    "tool_args": {
     "command_layer": "micro",
     "goal": "시즈 모드 해제",
     "micro": [
      {
-      "ability": "unsiege",
-      "unit_classes": [
-       "TERRAN_SIEGETANK"
-      ]
+      "ability": "unsiege"
      }
     ]
    }
@@ -1797,11 +1801,11 @@
     "MORPH_HELLBAT"
    ],
    "kind": "execute",
-   "latency_ms": 1616.4,
+   "latency_ms": 1385.5,
    "narration": "변환합니다: 화염기갑병으로 (화염차)",
    "reason": "변환합니다: 화염기갑병으로 (화염차)",
    "source": "catalog_resolver",
-   "tokens": 7237,
+   "tokens": 7238,
    "tool_args": {
     "catalog": {
      "command_id": "morph_hellbat"
@@ -1817,7 +1821,7 @@
     "MORPH_HELLION"
    ],
    "kind": "execute",
-   "latency_ms": 2283.6,
+   "latency_ms": 1713.5,
    "narration": "변환합니다: 화염차로 (화염기갑병)",
    "reason": "변환합니다: 화염차로 (화염기갑병)",
    "source": "catalog_resolver",
@@ -1837,7 +1841,7 @@
     "MORPH_THORHIGHIMPACTMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1954.4,
+   "latency_ms": 1318.9,
    "narration": "변환합니다: 토르 고충격 모드 (토르)",
    "reason": "변환합니다: 토르 고충격 모드 (토르)",
    "source": "catalog_resolver",
@@ -1857,7 +1861,7 @@
     "MORPH_THOREXPLOSIVEMODE"
    ],
    "kind": "execute",
-   "latency_ms": 2332.0,
+   "latency_ms": 3297.5,
    "narration": "변환합니다: 토르 폭발 모드 (토르(폭발 모드))",
    "reason": "변환합니다: 토르 폭발 모드 (토르(폭발 모드))",
    "source": "catalog_resolver",
@@ -1877,7 +1881,7 @@
     "MORPH_VIKINGASSAULTMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1446.7,
+   "latency_ms": 1446.8,
    "narration": "변환합니다: 바이킹 착륙 (바이킹(전투기))",
    "reason": "변환합니다: 바이킹 착륙 (바이킹(전투기))",
    "source": "catalog_resolver",
@@ -1887,7 +1891,7 @@
      "command_id": "morph_vikingassaultmode"
     },
     "command_layer": "operation",
-    "goal": "바이킹 착륙 모드"
+    "goal": "바이킹 착륙 모드 실행"
    }
   },
   "exp-067": {
@@ -1897,17 +1901,17 @@
     "MORPH_VIKINGFIGHTERMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1391.3,
+   "latency_ms": 1743.1,
    "narration": "변환합니다: 바이킹 전투기 모드 (바이킹(착륙))",
    "reason": "변환합니다: 바이킹 전투기 모드 (바이킹(착륙))",
    "source": "catalog_resolver",
-   "tokens": 7236,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "morph_vikingfightermode"
     },
     "command_layer": "operation",
-    "goal": "바이킹 전투기 모드로 전환"
+    "goal": "바이킹 전투기 모드로 변경"
    }
   },
   "exp-068": {
@@ -1916,7 +1920,7 @@
     "MORPH_LIBERATORAGMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1499.0,
+   "latency_ms": 1741.1,
    "reason": "",
    "source": "tool_call",
    "tokens": 7237,
@@ -1937,7 +1941,7 @@
     "MORPH_LIBERATORAAMODE"
    ],
    "kind": "execute",
-   "latency_ms": 2381.6,
+   "latency_ms": 1573.1,
    "narration": "변환합니다: 해방선 전투기 모드 (해방선(방어 모드))",
    "reason": "변환합니다: 해방선 전투기 모드 (해방선(방어 모드))",
    "source": "catalog_resolver",
@@ -1957,17 +1961,17 @@
     "MORPH_SUPPLYDEPOT_LOWER"
    ],
    "kind": "execute",
-   "latency_ms": 1526.2,
+   "latency_ms": 1369.5,
    "narration": "변환합니다: 보급고 내려 (보급고)",
    "reason": "변환합니다: 보급고 내려 (보급고)",
    "source": "catalog_resolver",
-   "tokens": 7226,
+   "tokens": 7225,
    "tool_args": {
     "catalog": {
      "command_id": "morph_supplydepot_lower"
     },
     "command_layer": "operation",
-    "goal": "보급고를 내린다"
+    "goal": "보급고 내리기"
    }
   },
   "exp-071": {
@@ -1977,11 +1981,11 @@
     "MORPH_SUPPLYDEPOT_RAISE"
    ],
    "kind": "execute",
-   "latency_ms": 3815.5,
+   "latency_ms": 1591.7,
    "narration": "변환합니다: 보급고 (내려간 보급고)",
    "reason": "변환합니다: 보급고 (내려간 보급고)",
    "source": "catalog_resolver",
-   "tokens": 7225,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "morph_supplydepot_raise"
@@ -1996,7 +2000,7 @@
     "EFFECT_STIM"
    ],
    "kind": "execute",
-   "latency_ms": 1469.5,
+   "latency_ms": 1439.5,
    "reason": "",
    "source": "fast_path_override",
    "tokens": 7225,
@@ -2015,17 +2019,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1519.7,
+   "latency_ms": 1492.6,
    "narration": "",
    "reason": "",
-   "tokens": 7238,
+   "tokens": 7219,
    "tool_args": {
-    "catalog": {
-     "command_id": "effect_scan"
-    },
     "clarification": "어디에 스캔을 사용할지 알려주세요.",
     "command_layer": "operation",
-    "goal": "스캔 사용"
+    "goal": "스캔 해"
    }
   },
   "exp-074": {
@@ -2035,17 +2036,17 @@
     "EFFECT_CALLDOWNMULE"
    ],
    "kind": "execute",
-   "latency_ms": 1623.3,
+   "latency_ms": 1365.4,
    "narration": "사용합니다: 뮬",
    "reason": "사용합니다: 뮬",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "effect_calldownmule"
     },
     "command_layer": "operation",
-    "goal": "뮬을 내려보내기"
+    "goal": "뮬 사용"
    }
   },
   "exp-075": {
@@ -2055,17 +2056,17 @@
     "EFFECT_SUPPLYDROP"
    ],
    "kind": "execute",
-   "latency_ms": 1270.2,
+   "latency_ms": 14721.7,
    "narration": "사용합니다: 보급 드롭",
    "reason": "사용합니다: 보급 드롭",
    "source": "catalog_resolver",
-   "tokens": 7222,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "effect_supplydrop"
     },
     "command_layer": "operation",
-    "goal": "보급 투하 실행"
+    "goal": "보급 투하 명령 실행"
    }
   },
   "exp-076": {
@@ -2074,10 +2075,10 @@
     "EFFECT_EMP"
    ],
    "kind": "execute",
-   "latency_ms": 1282.3,
+   "latency_ms": 2929.5,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7221,
+   "tokens": 7215,
    "tool_args": {
     "command_layer": "micro",
     "goal": "EMP 사용",
@@ -2089,23 +2090,26 @@
    }
   },
   "exp-077": {
-   "chosen": "effect_ghostsnipe",
    "command": "EFFECT_GHOSTSNIPE",
    "commands": [
     "EFFECT_GHOSTSNIPE"
    ],
    "kind": "execute",
-   "latency_ms": 1722.3,
-   "narration": "사용합니다: 저격",
-   "reason": "사용합니다: 저격",
-   "source": "catalog_resolver",
-   "tokens": 7227,
+   "latency_ms": 1597.3,
+   "reason": "",
+   "source": "tool_call",
+   "tokens": 7241,
    "tool_args": {
-    "catalog": {
-     "command_id": "effect_ghostsnipe"
-    },
-    "command_layer": "operation",
-    "goal": "유령 저격을 명령"
+    "command_layer": "micro",
+    "goal": "유령이 저격 사용",
+    "micro": [
+     {
+      "ability": "snipe",
+      "unit_classes": [
+       "TERRAN_GHOST"
+      ]
+     }
+    ]
    }
   },
   "exp-078": {
@@ -2115,17 +2119,17 @@
     "EFFECT_NUKECALLDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 2315.7,
+   "latency_ms": 1607.7,
    "narration": "사용합니다: 핵 발사",
    "reason": "사용합니다: 핵 발사",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "effect_nukecalldown"
     },
     "command_layer": "operation",
-    "goal": "전술 핵을 떨어뜨린다"
+    "goal": "전술 핵 발사 명령"
    }
   },
   "exp-079": {
@@ -2135,7 +2139,7 @@
     "EFFECT_KD8CHARGE"
    ],
    "kind": "execute",
-   "latency_ms": 1394.9,
+   "latency_ms": 3936.5,
    "narration": "사용합니다: KD8",
    "reason": "사용합니다: KD8",
    "source": "catalog_resolver",
@@ -2154,7 +2158,7 @@
     "EFFECT_LOCKON"
    ],
    "kind": "execute",
-   "latency_ms": 1696.2,
+   "latency_ms": 1762.5,
    "reason": "",
    "source": "tool_call",
    "tokens": 7252,
@@ -2178,7 +2182,7 @@
     "EFFECT_YAMATOGUN"
    ],
    "kind": "execute",
-   "latency_ms": 1664.1,
+   "latency_ms": 2580.0,
    "narration": "사용합니다: 야마토",
    "reason": "사용합니다: 야마토",
    "source": "catalog_resolver",
@@ -2188,7 +2192,7 @@
      "command_id": "effect_yamatogun"
     },
     "command_layer": "operation",
-    "goal": "야마토 포를 발사"
+    "goal": "야마토 포 발사"
    }
   },
   "exp-082": {
@@ -2196,10 +2200,10 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 3856.7,
+   "latency_ms": 2512.5,
    "narration": "전술 도약: 어디에 쓸까요? (예: 적 본진 / 앞마당 / 우리 본진)",
    "reason": "",
-   "tokens": 7224,
+   "tokens": 7225,
    "tool_args": {
     "catalog": {
      "command_id": "effect_tacticaljump"
@@ -2215,7 +2219,7 @@
     "EFFECT_AUTOTURRET"
    ],
    "kind": "execute",
-   "latency_ms": 1590.4,
+   "latency_ms": 1548.2,
    "narration": "사용합니다: 자동 터렛",
    "reason": "사용합니다: 자동 터렛",
    "source": "catalog_resolver",
@@ -2234,10 +2238,10 @@
     "EFFECT_HUNTERSEEKERMISSILE"
    ],
    "kind": "execute",
-   "latency_ms": 1586.0,
+   "latency_ms": 1230.4,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7231,
+   "tokens": 7228,
    "tool_args": {
     "command_layer": "micro",
     "goal": "추적 미사일 발사",
@@ -2255,7 +2259,7 @@
     "EFFECT_POINTDEFENSEDRONE"
    ],
    "kind": "execute",
-   "latency_ms": 1429.3,
+   "latency_ms": 2355.8,
    "narration": "사용합니다: 방어 드론",
    "reason": "사용합니다: 방어 드론",
    "source": "catalog_resolver",
@@ -2274,13 +2278,13 @@
     "EFFECT_HEAL"
    ],
    "kind": "execute",
-   "latency_ms": 2006.2,
+   "latency_ms": 1401.8,
    "reason": "",
    "source": "tool_call",
    "tokens": 7230,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "의료선 치료 능력을 사용",
+    "goal": "의료선 치료 능력 사용",
     "micro": [
      {
       "ability": "medivac_heal"
@@ -2295,17 +2299,17 @@
     "EFFECT_MEDIVACIGNITEAFTERBURNERS"
    ],
    "kind": "execute",
-   "latency_ms": 1231.6,
+   "latency_ms": 2001.4,
    "narration": "사용합니다: 부스터",
    "reason": "사용합니다: 부스터",
    "source": "catalog_resolver",
-   "tokens": 7230,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "effect_medivacigniteafterburners"
     },
     "command_layer": "operation",
-    "goal": "의료선 부스터 사용"
+    "goal": "의료선 부스터 켜"
    }
   },
   "exp-088": {
@@ -2315,17 +2319,17 @@
     "EFFECT_REPAIR"
    ],
    "kind": "execute",
-   "latency_ms": 1658.2,
+   "latency_ms": 1460.7,
    "narration": "사용합니다: 수리",
    "reason": "사용합니다: 수리",
    "source": "catalog_resolver",
-   "tokens": 7225,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "effect_repair"
     },
     "command_layer": "operation",
-    "goal": "SCV 수리 명령을 실행"
+    "goal": "SCV 수리 명령 실행"
    }
   },
   "exp-089": {
@@ -2335,17 +2339,17 @@
     "EFFECT_SALVAGE"
    ],
    "kind": "execute",
-   "latency_ms": 1521.9,
+   "latency_ms": 1342.3,
    "narration": "사용합니다: 벙커 해체",
    "reason": "사용합니다: 벙커 해체",
    "source": "catalog_resolver",
-   "tokens": 7227,
+   "tokens": 7228,
    "tool_args": {
     "catalog": {
      "command_id": "effect_salvage"
     },
     "command_layer": "operation",
-    "goal": "벙커 해체 명령 실행"
+    "goal": "벙커 해체 명령을 실행"
    }
   },
   "exp-090": {
@@ -2355,17 +2359,17 @@
     "EFFECT_SPRAY"
    ],
    "kind": "execute",
-   "latency_ms": 1832.0,
+   "latency_ms": 1937.9,
    "narration": "사용합니다: 스프레이",
    "reason": "사용합니다: 스프레이",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7232,
    "tool_args": {
     "catalog": {
      "command_id": "effect_spray"
     },
     "command_layer": "operation",
-    "goal": "SCV 스프레이 뿌리기"
+    "goal": "SCV로 스프레이 뿌리기"
    }
   },
   "exp-091": {
@@ -2374,7 +2378,7 @@
     "EFFECT_WIDOWMINEATTACK"
    ],
    "kind": "execute",
-   "latency_ms": 1716.2,
+   "latency_ms": 1449.3,
    "reason": "",
    "source": "tool_call",
    "tokens": 7227,
@@ -2393,16 +2397,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1704.7,
+   "latency_ms": 1610.0,
    "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
    "reason": "",
-   "tokens": 7231,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "behavior_cloakon"
     },
     "command_layer": "operation",
-    "goal": "유령이나 밴시의 클로킹을 켜"
+    "goal": "클로킹 켜"
    }
   },
   "exp-093": {
@@ -2410,10 +2414,10 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1596.1,
+   "latency_ms": 1654.5,
    "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
    "reason": "",
-   "tokens": 7223,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "behavior_cloakoff"
@@ -2429,7 +2433,7 @@
     "BEHAVIOR_HOLDFIREON"
    ],
    "kind": "execute",
-   "latency_ms": 1831.6,
+   "latency_ms": 2028.3,
    "narration": "사용합니다: 사격 중지",
    "reason": "사용합니다: 사격 중지",
    "source": "catalog_resolver",
@@ -2439,7 +2443,7 @@
      "command_id": "behavior_holdfireon"
     },
     "command_layer": "operation",
-    "goal": "유령 사격 중지를 활성화"
+    "goal": "유령 사격 중지 활성화"
    }
   },
   "exp-095": {
@@ -2449,7 +2453,7 @@
     "BEHAVIOR_HOLDFIREOFF"
    ],
    "kind": "execute",
-   "latency_ms": 1272.5,
+   "latency_ms": 1318.7,
    "narration": "사용합니다: 사격 재개",
    "reason": "사용합니다: 사격 재개",
    "source": "catalog_resolver",
@@ -2468,7 +2472,7 @@
     "BURROWDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 1828.0,
+   "latency_ms": 3080.6,
    "reason": "",
    "source": "tool_call",
    "tokens": 7229,
@@ -2488,13 +2492,13 @@
     "BURROWUP"
    ],
    "kind": "execute",
-   "latency_ms": 1730.2,
+   "latency_ms": 1521.2,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7232,
+   "tokens": 7229,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "지뢰 매복 해제",
+    "goal": "지뢰 매복을 해제",
     "micro": [
      {
       "ability": "widow_mine_unburrow"
@@ -2508,10 +2512,10 @@
     "LIFT"
    ],
    "kind": "execute",
-   "latency_ms": 2350.6,
+   "latency_ms": 2468.6,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7275,
+   "tokens": 7272,
    "tool_args": {
     "command_layer": "micro",
     "goal": "건물을 이륙시켜",
@@ -2533,14 +2537,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1443.6,
+   "latency_ms": 1565.0,
    "narration": "",
    "reason": "",
-   "tokens": 7227,
+   "tokens": 7226,
    "tool_args": {
-    "clarification": "어디에 건물을 착륙시킬까요?",
+    "clarification": "어디에 착륙할까요?",
     "command_layer": "micro",
-    "goal": "건물을 착륙시킬 위치를 확인 중"
+    "goal": "건물을 착륙시킬 위치를 묻는 중"
    }
   },
   "exp-100": {
@@ -2550,17 +2554,17 @@
     "LOAD"
    ],
    "kind": "execute",
-   "latency_ms": 2109.9,
+   "latency_ms": 1700.3,
    "narration": "실행합니다: 태워",
    "reason": "실행합니다: 태워",
    "source": "catalog_resolver",
-   "tokens": 7218,
+   "tokens": 7221,
    "tool_args": {
     "catalog": {
      "command_id": "load"
     },
     "command_layer": "catalog",
-    "goal": "수송 적재"
+    "goal": "수송 적재 명령 실행"
    }
   },
   "exp-101": {
@@ -2570,7 +2574,7 @@
     "LOADALL"
    ],
    "kind": "execute",
-   "latency_ms": 2339.2,
+   "latency_ms": 2656.3,
    "narration": "실행합니다: 사령부에 일꾼 넣어",
    "reason": "실행합니다: 사령부에 일꾼 넣어",
    "source": "catalog_resolver",
@@ -2580,7 +2584,7 @@
      "command_id": "loadall"
     },
     "command_layer": "operation",
-    "goal": "사령부에 일꾼 모두 태우기"
+    "goal": "사령부에 일꾼 전부 태워"
    }
   },
   "exp-102": {
@@ -2590,17 +2594,17 @@
     "UNLOADALL"
    ],
    "kind": "execute",
-   "latency_ms": 1322.8,
+   "latency_ms": 1504.1,
    "narration": "실행합니다: 전부 내려",
    "reason": "실행합니다: 전부 내려",
    "source": "catalog_resolver",
-   "tokens": 7218,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "unloadall"
     },
     "command_layer": "operation",
-    "goal": "전부 내려"
+    "goal": "전부 내리는 명령 실행"
    }
   },
   "exp-103": {
@@ -2610,17 +2614,17 @@
     "UNLOADALLAT"
    ],
    "kind": "execute",
-   "latency_ms": 2348.0,
+   "latency_ms": 1427.0,
    "narration": "실행합니다: 의료선 내려",
    "reason": "실행합니다: 의료선 내려",
    "source": "catalog_resolver",
-   "tokens": 7227,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "unloadallat"
     },
     "command_layer": "operation",
-    "goal": "의료선을 그 자리에 내려"
+    "goal": "의료선을 그 자리에 내리기"
    }
   },
   "exp-104": {
@@ -2630,7 +2634,7 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1735.6,
+   "latency_ms": 1287.9,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
@@ -2650,7 +2654,7 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1200.9,
+   "latency_ms": 1984.2,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
@@ -2670,7 +2674,7 @@
     "RESEARCH_COMBATSHIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1342.5,
+   "latency_ms": 1277.0,
    "narration": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "reason": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "source": "catalog_resolver",
@@ -2690,7 +2694,7 @@
     "RESEARCH_CONCUSSIVESHELLS"
    ],
    "kind": "execute",
-   "latency_ms": 1224.7,
+   "latency_ms": 2676.0,
    "narration": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "reason": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "source": "catalog_resolver",
@@ -2710,11 +2714,11 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 1557.1,
+   "latency_ms": 2401.3,
    "narration": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7222,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
@@ -2730,7 +2734,7 @@
     "BUILD_ENGINEERINGBAY"
    ],
    "kind": "execute",
-   "latency_ms": 1245.5,
+   "latency_ms": 1793.1,
    "narration": "건설합니다: 공학 연구소",
    "reason": "건설합니다: 공학 연구소",
    "source": "catalog_resolver",
@@ -2750,7 +2754,7 @@
     "TRAIN_SIEGETANK"
    ],
    "kind": "execute",
-   "latency_ms": 1428.3,
+   "latency_ms": 1425.7,
    "narration": "생산합니다: 탱크 (군수공장)",
    "reason": "생산합니다: 탱크 (군수공장)",
    "source": "catalog_resolver",
@@ -2770,7 +2774,7 @@
     "EFFECT_SCAN"
    ],
    "kind": "execute",
-   "latency_ms": 1277.5,
+   "latency_ms": 2130.2,
    "narration": "사용합니다: 스캔 · enemy_main",
    "reason": "사용합니다: 스캔 · enemy_main",
    "source": "catalog_resolver",
@@ -2791,7 +2795,7 @@
     "EFFECT_CALLDOWNMULE"
    ],
    "kind": "execute",
-   "latency_ms": 1702.6,
+   "latency_ms": 1364.3,
    "narration": "사용합니다: 뮬",
    "reason": "사용합니다: 뮬",
    "source": "catalog_resolver",
@@ -2810,10 +2814,10 @@
     "MORPH_SIEGEMODE"
    ],
    "kind": "execute",
-   "latency_ms": 2870.2,
+   "latency_ms": 1603.7,
    "reason": "",
    "source": "fast_path_override",
-   "tokens": 7242,
+   "tokens": 7240,
    "tool_args": {
     "command_layer": "micro",
     "goal": "siege up the tanks",
@@ -2833,7 +2837,7 @@
     "BEHAVIOR_CLOAKON@BANSHEE"
    ],
    "kind": "execute",
-   "latency_ms": 1946.1,
+   "latency_ms": 4456.0,
    "reason": "",
    "source": "tool_call",
    "tokens": 7244,
@@ -2856,10 +2860,10 @@
     "BEHAVIOR_CLOAKON@GHOST"
    ],
    "kind": "execute",
-   "latency_ms": 1361.8,
+   "latency_ms": 1837.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7227,
+   "tokens": 7231,
    "tool_args": {
     "command_layer": "micro",
     "goal": "유령 클로킹 활성화",
@@ -2877,7 +2881,7 @@
     "BEHAVIOR_CLOAKOFF@BANSHEE"
    ],
    "kind": "execute",
-   "latency_ms": 1507.3,
+   "latency_ms": 1995.9,
    "narration": "사용합니다: 클로킹",
    "reason": "사용합니다: 클로킹",
    "source": "catalog_resolver",
@@ -2895,10 +2899,10 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1696.8,
+   "latency_ms": 1561.1,
    "narration": "기술실: 이미 애드온이 붙어 있습니다",
    "reason": "",
-   "tokens": 7226,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "build_techlab"
@@ -2912,16 +2916,17 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2903.2,
+   "latency_ms": 1661.5,
    "narration": "리액터: 이미 애드온이 붙어 있습니다",
    "reason": "",
-   "tokens": 7228,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
-     "command_id": "build_reactor"
+     "command_id": "build_reactor",
+     "location": null
     },
     "command_layer": "operation",
-    "goal": "팩토리에 리액터 달아"
+    "goal": "팩토리에 리액터 부착"
    }
   },
   "exp-119": {
@@ -2929,7 +2934,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1722.0,
+   "latency_ms": 1640.7,
    "narration": "기술실: 이미 애드온이 붙어 있습니다",
    "reason": "",
    "tokens": 7231,
@@ -2938,7 +2943,7 @@
      "command_id": "build_techlab"
     },
     "command_layer": "operation",
-    "goal": "스타포트에 테크랩 달기"
+    "goal": "스타포트에 테크랩 달아"
    }
   },
   "exp-120": {
@@ -2948,17 +2953,17 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1548.8,
+   "latency_ms": 2045.8,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7223,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "research_stimpack"
     },
     "command_layer": "operation",
-    "goal": "스팀팩 연구 진행"
+    "goal": "스팀팩 연구 시작"
    }
   },
   "exp-121": {
@@ -2968,7 +2973,7 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1790.3,
+   "latency_ms": 1659.3,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
@@ -2988,17 +2993,17 @@
     "TRAIN_SIEGETANK"
    ],
    "kind": "execute",
-   "latency_ms": 1322.1,
+   "latency_ms": 1580.7,
    "narration": "생산합니다: 탱크 (군수공장)",
    "reason": "생산합니다: 탱크 (군수공장)",
    "source": "catalog_resolver",
-   "tokens": 7238,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "train_siegetank"
     },
     "command_layer": "operation",
-    "goal": "시즈 탱크 뽑아줘 빨리"
+    "goal": "시즈 탱크 생산 명령"
    }
   },
   "exp-123": {
@@ -3008,17 +3013,17 @@
     "BUILD_ENGINEERINGBAY"
    ],
    "kind": "execute",
-   "latency_ms": 1724.2,
+   "latency_ms": 1911.4,
    "narration": "건설합니다: 공학 연구소",
    "reason": "건설합니다: 공학 연구소",
    "source": "catalog_resolver",
-   "tokens": 7232,
+   "tokens": 7228,
    "tool_args": {
     "catalog": {
      "command_id": "build_engineeringbay"
     },
     "command_layer": "operation",
-    "goal": "엔지니어링 베이 하나 건설"
+    "goal": "공학 연구소 건설"
    }
   },
   "exp-124": {
@@ -3028,17 +3033,17 @@
     "BUILD_ENGINEERINGBAY"
    ],
    "kind": "execute",
-   "latency_ms": 2267.8,
+   "latency_ms": 1628.9,
    "narration": "건설합니다: 공학 연구소",
    "reason": "건설합니다: 공학 연구소",
    "source": "catalog_resolver",
-   "tokens": 7221,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "build_engineeringbay"
     },
     "command_layer": "operation",
-    "goal": "에베 지어"
+    "goal": "공학 연구소 건설"
    }
   },
   "exp-125": {
@@ -3047,13 +3052,13 @@
     "BUILD_BARRACKS"
    ],
    "kind": "execute",
-   "latency_ms": 1806.5,
+   "latency_ms": 2512.7,
    "reason": "",
    "source": "tool_call",
    "tokens": 7258,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "병영 하나 더 추가",
+    "goal": "배럭 하나 더 추가",
     "macro": {
      "building_tasks": [
       {
@@ -3071,21 +3076,16 @@
     "BUILD_COMMANDCENTER"
    ],
    "kind": "execute",
-   "latency_ms": 1927.7,
+   "latency_ms": 1395.5,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7269,
+   "tokens": 7239,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "앞마당에 사령부를 먼저 건설해",
+    "goal": "앞마당 사령부 먼저 짓기",
     "macro": {
-     "building_tasks": [
-      {
-       "building_type": "TERRAN_COMMANDCENTER",
-       "placement_intent": "natural"
-      }
-     ],
-     "task_type": "tech_transition"
+     "location": "natural",
+     "task_type": "expand_or_land_command_center"
     }
    }
   },
@@ -3096,7 +3096,7 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#2"
    ],
    "kind": "execute",
-   "latency_ms": 1902.8,
+   "latency_ms": 2054.4,
    "narration": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -3106,7 +3106,7 @@
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 업그레이드 시작"
+    "goal": "보병 공격력 업그레이드 진행"
    }
   },
   "int-002": {
@@ -3116,17 +3116,17 @@
     "RESEARCH_TERRANINFANTRYARMOR#1"
    ],
    "kind": "execute",
-   "latency_ms": 1377.2,
+   "latency_ms": 1818.3,
    "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7233,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryarmor"
     },
     "command_layer": "operation",
-    "goal": "보병 방어력 업그레이드"
+    "goal": "보병 방어력 업그레이드를 진행"
    }
   },
   "int-003": {
@@ -3136,7 +3136,7 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#3"
    ],
    "kind": "execute",
-   "latency_ms": 1452.9,
+   "latency_ms": 2214.7,
    "narration": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -3146,7 +3146,7 @@
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 업그레이드 올리기"
+    "goal": "보병 업그레이드 올려줘"
    }
   },
   "int-004": {
@@ -3156,17 +3156,17 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#2"
    ],
    "kind": "execute",
-   "latency_ms": 1674.8,
+   "latency_ms": 1357.7,
    "narration": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7229,
+   "tokens": 7230,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 업그레이드 진행"
+    "goal": "보병 업그레이드 해줘"
    }
   },
   "int-005": {
@@ -3176,7 +3176,7 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#2"
    ],
    "kind": "execute",
-   "latency_ms": 1591.7,
+   "latency_ms": 2498.4,
    "narration": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -3196,17 +3196,17 @@
     "RESEARCH_TERRANINFANTRYARMOR#1"
    ],
    "kind": "execute",
-   "latency_ms": 3006.6,
+   "latency_ms": 1478.5,
    "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7232,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryarmor"
     },
     "command_layer": "operation",
-    "goal": "보병 방어력 업그레이드 연구하기"
+    "goal": "보병 방어력 업그레이드를 진행"
    }
   },
   "int-007": {
@@ -3216,17 +3216,17 @@
     "RESEARCH_TERRANSTRUCTUREARMORUPGRADE"
    ],
    "kind": "execute",
-   "latency_ms": 1634.2,
+   "latency_ms": 2729.3,
    "narration": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "reason": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7230,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranstructurearmorupgrade"
     },
     "command_layer": "operation",
-    "goal": "건물 방어력 업그레이드 진행"
+    "goal": "건물 방어력 업그레이드"
    }
   },
   "int-008": {
@@ -3236,11 +3236,11 @@
     "RESEARCH_TERRANSTRUCTUREARMORUPGRADE"
    ],
    "kind": "execute",
-   "latency_ms": 1497.2,
+   "latency_ms": 1709.3,
    "narration": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "reason": "연구를 시작합니다: 건물 방어력 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7233,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranstructurearmorupgrade"
@@ -3256,17 +3256,17 @@
     "RESEARCH_HISECAUTOTRACKING"
    ],
    "kind": "execute",
-   "latency_ms": 1800.0,
+   "latency_ms": 2941.9,
    "narration": "연구를 시작합니다: 고보안 자동 추적 (공학 연구소)",
    "reason": "연구를 시작합니다: 고보안 자동 추적 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7231,
+   "tokens": 7232,
    "tool_args": {
     "catalog": {
      "command_id": "research_hisecautotracking"
     },
     "command_layer": "operation",
-    "goal": "터렛 사거리 업그레이드"
+    "goal": "터렛 사거리 업그레이드 진행"
    }
   },
   "int-010": {
@@ -3276,7 +3276,7 @@
     "RESEARCH_TERRANVEHICLEWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 2229.9,
+   "latency_ms": 1383.8,
    "narration": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "source": "catalog_resolver",
@@ -3296,17 +3296,17 @@
     "RESEARCH_TERRANVEHICLEANDSHIPPLATING#1"
    ],
    "kind": "execute",
-   "latency_ms": 1331.6,
+   "latency_ms": 1363.4,
    "narration": "연구를 시작합니다: 차량 방어력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 차량 방어력 1단계 (무기고)",
    "source": "catalog_resolver",
-   "tokens": 7236,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranvehicleandshipplating"
     },
     "command_layer": "operation",
-    "goal": "차량 방어력 업그레이드 시작"
+    "goal": "차량 방어력 업그레이드 진행"
    }
   },
   "int-012": {
@@ -3316,7 +3316,7 @@
     "RESEARCH_TERRANSHIPWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 1270.1,
+   "latency_ms": 1582.2,
    "narration": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 함선 공격력 1단계 (무기고)",
    "source": "catalog_resolver",
@@ -3326,7 +3326,7 @@
      "command_id": "research_terranshipweapons"
     },
     "command_layer": "operation",
-    "goal": "공중 유닛 공격력 업그레이드 시작"
+    "goal": "공중 유닛 공격력 업그레이드 진행"
    }
   },
   "int-013": {
@@ -3336,7 +3336,7 @@
     "RESEARCH_BANSHEECLOAKINGFIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1978.1,
+   "latency_ms": 1626.3,
    "narration": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "source": "catalog_resolver",
@@ -3356,7 +3356,7 @@
     "RESEARCH_BANSHEECLOAKINGFIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1397.9,
+   "latency_ms": 1355.4,
    "narration": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "source": "catalog_resolver",
@@ -3376,17 +3376,17 @@
     "RESEARCH_BANSHEEHYPERFLIGHTROTORS"
    ],
    "kind": "execute",
-   "latency_ms": 1855.2,
+   "latency_ms": 1524.0,
    "narration": "연구를 시작합니다: 밴시 속도 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 속도 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7234,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "research_bansheehyperflightrotors"
     },
     "command_layer": "operation",
-    "goal": "밴시 속도 업그레이드를 연구"
+    "goal": "밴시 속도 연구 시작"
    }
   },
   "int-016": {
@@ -3394,7 +3394,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1644.9,
+   "latency_ms": 2664.6,
    "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
    "reason": "",
    "tokens": 7229,
@@ -3403,7 +3403,7 @@
      "command_id": "behavior_cloakon"
     },
     "command_layer": "operation",
-    "goal": "고스트 은신 가능하게 활성화"
+    "goal": "고스트 은신 가능하게 해줘"
    }
   },
   "int-017": {
@@ -3413,17 +3413,17 @@
     "RESEARCH_BATTLECRUISERWEAPONREFIT"
    ],
    "kind": "execute",
-   "latency_ms": 1697.9,
+   "latency_ms": 1664.6,
    "narration": "연구를 시작합니다: 야마토 (융합로)",
    "reason": "연구를 시작합니다: 야마토 (융합로)",
    "source": "catalog_resolver",
-   "tokens": 7236,
+   "tokens": 7232,
    "tool_args": {
     "catalog": {
      "command_id": "research_battlecruiserweaponrefit"
     },
     "command_layer": "operation",
-    "goal": "야마토를 사용할 수 있도록 연구 진행"
+    "goal": "야마토 연구 진행"
    }
   },
   "int-018": {
@@ -3433,17 +3433,17 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 2083.5,
+   "latency_ms": 1828.2,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7232,
+   "tokens": 7242,
    "tool_args": {
     "catalog": {
      "command_id": "research_stimpack"
     },
     "command_layer": "operation",
-    "goal": "해병 스팀팩 연구"
+    "goal": "해병이 체력 깎으면서 빨라지는 스팀팩 연구"
    }
   },
   "int-019": {
@@ -3453,7 +3453,7 @@
     "RESEARCH_CONCUSSIVESHELLS"
    ],
    "kind": "execute",
-   "latency_ms": 1273.4,
+   "latency_ms": 1765.6,
    "narration": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "reason": "연구를 시작합니다: 충격탄 (병영 기술실)",
    "source": "catalog_resolver",
@@ -3473,34 +3473,34 @@
     "RESEARCH_COMBATSHIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1585.1,
+   "latency_ms": 1548.7,
    "narration": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "reason": "연구를 시작합니다: 전투 방패 (병영 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7223,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "research_combatshield"
     },
     "command_layer": "operation",
-    "goal": "해병 방패 연구"
+    "goal": "해병 방패 업그레이드 진행"
    }
   },
   "int-021": {
-   "chosen": "research_infernalpreigniter",
-   "command": "RESEARCH_INFERNALPREIGNITER",
+   "chosen": "morph_hellion",
+   "command": "MORPH_HELLION",
    "commands": [
-    "RESEARCH_INFERNALPREIGNITER"
+    "MORPH_HELLION"
    ],
    "kind": "execute",
-   "latency_ms": 1329.7,
-   "narration": "연구를 시작합니다: 화염 예열기 (군수공장 기술실)",
-   "reason": "연구를 시작합니다: 화염 예열기 (군수공장 기술실)",
+   "latency_ms": 1671.7,
+   "narration": "변환합니다: 화염차로 (화염기갑병)",
+   "reason": "변환합니다: 화염차로 (화염기갑병)",
    "source": "catalog_resolver",
-   "tokens": 7230,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
-     "command_id": "research_infernalpreigniter"
+     "command_id": "morph_hellion"
     },
     "command_layer": "operation",
     "goal": "화염차 업그레이드"
@@ -3513,7 +3513,7 @@
     "RESEARCH_RAVENCORVIDREACTOR"
    ],
    "kind": "execute",
-   "latency_ms": 1506.7,
+   "latency_ms": 2681.8,
    "narration": "연구를 시작합니다: 레이븐 에너지 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 레이븐 에너지 (우주공항 기술실)",
    "source": "catalog_resolver",
@@ -3533,17 +3533,17 @@
     "EFFECT_MEDIVACIGNITEAFTERBURNERS"
    ],
    "kind": "execute",
-   "latency_ms": 6386.1,
+   "latency_ms": 2254.3,
    "narration": "사용합니다: 부스터",
    "reason": "사용합니다: 부스터",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "effect_medivacigniteafterburners"
     },
     "command_layer": "operation",
-    "goal": "의료선 부스터 사용"
+    "goal": "의료선 부스터 발동"
    }
   },
   "int-024": {
@@ -3553,7 +3553,7 @@
     "EFFECT_MEDIVACIGNITEAFTERBURNERS"
    ],
    "kind": "execute",
-   "latency_ms": 1781.1,
+   "latency_ms": 1571.8,
    "narration": "사용합니다: 부스터",
    "reason": "사용합니다: 부스터",
    "source": "catalog_resolver",
@@ -3562,7 +3562,7 @@
     "catalog": {
      "command_id": "effect_medivacigniteafterburners"
     },
-    "command_layer": "operation",
+    "command_layer": "catalog",
     "goal": "의료선 부스터 사용"
    }
   },
@@ -3572,13 +3572,13 @@
     "BURROWDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 1498.2,
+   "latency_ms": 1476.0,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7233,
+   "tokens": 7228,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "지뢰 매복 명령 실행",
+    "goal": "지뢰를 매복시킨다",
     "micro": [
      {
       "ability": "widow_mine_burrow"
@@ -3592,13 +3592,13 @@
     "BURROWDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 1643.6,
+   "latency_ms": 2260.2,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7235,
+   "tokens": 7236,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "지뢰 매복 명령",
+    "goal": "지뢰 매복 능력을 사용",
     "micro": [
      {
       "ability": "widow_mine_burrow"
@@ -3607,23 +3607,23 @@
    }
   },
   "int-027": {
+   "chosen": "burrowup",
    "command": "BURROWUP",
    "commands": [
     "BURROWUP"
    ],
    "kind": "execute",
-   "latency_ms": 1711.3,
-   "reason": "",
-   "source": "tool_call",
-   "tokens": 7232,
+   "latency_ms": 1334.0,
+   "narration": "실행합니다: 지뢰 매복",
+   "reason": "실행합니다: 지뢰 매복",
+   "source": "catalog_resolver",
+   "tokens": 7223,
    "tool_args": {
-    "command_layer": "micro",
-    "goal": "지뢰 매복 해제",
-    "micro": [
-     {
-      "ability": "widow_mine_unburrow"
-     }
-    ]
+    "catalog": {
+     "command_id": "burrowup"
+    },
+    "command_layer": "catalog",
+    "goal": "지뢰 매복 해제"
    }
   },
   "int-028": {
@@ -3632,13 +3632,13 @@
     "MORPH_SIEGEMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1528.2,
+   "latency_ms": 1669.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7252,
+   "tokens": 7251,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "탱크 시즈모드",
+    "goal": "탱크를 포대 모드로 전환",
     "micro": [
      {
       "ability": "siege_mode",
@@ -3656,7 +3656,7 @@
     "MORPH_UNSIEGE"
    ],
    "kind": "execute",
-   "latency_ms": 3342.3,
+   "latency_ms": 1362.5,
    "narration": "변환합니다: 시즈 (시즈 모드 공성 전차)",
    "reason": "변환합니다: 시즈 (시즈 모드 공성 전차)",
    "source": "catalog_resolver",
@@ -3675,7 +3675,7 @@
     "EFFECT_STIM"
    ],
    "kind": "execute",
-   "latency_ms": 1669.8,
+   "latency_ms": 1908.1,
    "reason": "",
    "source": "tool_call",
    "tokens": 7235,
@@ -3690,24 +3690,24 @@
    }
   },
   "int-031": {
-   "command": "OPERATION:None",
+   "chosen": "effect_scan",
+   "command": "EFFECT_SCAN",
    "commands": [
-    "OPERATION:None"
+    "EFFECT_SCAN"
    ],
    "kind": "execute",
-   "latency_ms": 1534.1,
-   "reason": "",
-   "source": "tool_call",
-   "tokens": 7240,
+   "latency_ms": 2071.7,
+   "narration": "사용합니다: 스캔 · enemy_main",
+   "reason": "사용합니다: 스캔 · enemy_main",
+   "source": "catalog_resolver",
+   "tokens": 7233,
    "tool_args": {
-    "command_layer": "operation",
-    "goal": "적 본진 한번 보자",
-    "operations": [
-     {
-      "location": "enemy_main",
-      "task_type": "scout_with_units"
-     }
-    ]
+    "catalog": {
+     "command_id": "effect_scan",
+     "location": "enemy_main"
+    },
+    "command_layer": "catalog",
+    "goal": "적 본진에 스캔"
    }
   },
   "int-032": {
@@ -3716,7 +3716,7 @@
     "TRAIN_SCV"
    ],
    "kind": "execute",
-   "latency_ms": 1505.8,
+   "latency_ms": 1650.6,
    "reason": "",
    "source": "tool_call",
    "tokens": 7251,
@@ -3739,27 +3739,27 @@
     "EFFECT_SUPPLYDROP"
    ],
    "kind": "execute",
-   "latency_ms": 1687.9,
+   "latency_ms": 1660.5,
    "narration": "사용합니다: 보급 드롭",
    "reason": "사용합니다: 보급 드롭",
    "source": "catalog_resolver",
-   "tokens": 7234,
+   "tokens": 7228,
    "tool_args": {
     "catalog": {
      "command_id": "effect_supplydrop"
     },
     "command_layer": "catalog",
-    "goal": "보급 드롭을 사용해 인구수를 확보"
+    "goal": "보급 드롭 사용"
    }
   },
   "int-034": {
    "command": null,
    "commands": [],
    "kind": "execute",
-   "latency_ms": 2569.6,
+   "latency_ms": 1911.0,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7296,
+   "tokens": 7297,
    "tool_args": {
     "command_layer": "micro",
     "goal": "사령부를 이륙시켜 앞마당에 착륙",
@@ -3767,7 +3767,7 @@
      {
       "ability": "lift_off",
       "unit_classes": [
-       "TERRAN_COMMANDCENTERFLYING"
+       "TERRAN_COMMANDCENTER"
       ]
      },
      {
@@ -3788,17 +3788,17 @@
     "MORPH_ORBITALCOMMAND"
    ],
    "kind": "execute",
-   "latency_ms": 1962.0,
+   "latency_ms": 1441.9,
    "narration": "변환합니다: 궤도 사령부 (사령부)",
    "reason": "변환합니다: 궤도 사령부 (사령부)",
    "source": "catalog_resolver",
-   "tokens": 7241,
+   "tokens": 7236,
    "tool_args": {
     "catalog": {
      "command_id": "morph_orbitalcommand"
     },
     "command_layer": "operation",
-    "goal": "사령부를 궤도 사령부로 변환"
+    "goal": "사령부 궤도로 전환"
    }
   },
   "int-036": {
@@ -3808,7 +3808,7 @@
     "MORPH_PLANETARYFORTRESS"
    ],
    "kind": "execute",
-   "latency_ms": 1683.4,
+   "latency_ms": 1454.3,
    "narration": "변환합니다: 행성 요새 (사령부)",
    "reason": "변환합니다: 행성 요새 (사령부)",
    "source": "catalog_resolver",
@@ -3828,17 +3828,17 @@
     "MORPH_VIKINGASSAULTMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1724.7,
+   "latency_ms": 1875.2,
    "narration": "변환합니다: 바이킹 착륙 (바이킹(전투기))",
    "reason": "변환합니다: 바이킹 착륙 (바이킹(전투기))",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "morph_vikingassaultmode"
     },
     "command_layer": "operation",
-    "goal": "바이킹을 착륙 모드로 전환"
+    "goal": "바이킹 착륙 모드로 전환"
    }
   },
   "int-038": {
@@ -3848,7 +3848,7 @@
     "MORPH_VIKINGFIGHTERMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1347.3,
+   "latency_ms": 1387.9,
    "narration": "변환합니다: 바이킹 전투기 모드 (바이킹(착륙))",
    "reason": "변환합니다: 바이킹 전투기 모드 (바이킹(착륙))",
    "source": "catalog_resolver",
@@ -3858,7 +3858,7 @@
      "command_id": "morph_vikingfightermode"
     },
     "command_layer": "operation",
-    "goal": "바이킹 전투기 모드로 전환"
+    "goal": "바이킹 다시 전투기 모드로 전환"
    }
   },
   "int-039": {
@@ -3867,19 +3867,16 @@
     "MORPH_LIBERATORAGMODE"
    ],
    "kind": "execute",
-   "latency_ms": 1545.9,
+   "latency_ms": 1579.2,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7259,
+   "tokens": 7240,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "해방선을 방어 모드로 전환",
+    "goal": "해방선 땅 지키기 모드",
     "micro": [
      {
-      "ability": "liberator_defender_mode",
-      "unit_classes": [
-       "TERRAN_LIBERATOR"
-      ]
+      "ability": "liberator_defender_mode"
      }
     ]
    }
@@ -3891,7 +3888,7 @@
     "MORPH_HELLBAT"
    ],
    "kind": "execute",
-   "latency_ms": 1341.3,
+   "latency_ms": 1687.5,
    "narration": "변환합니다: 화염기갑병으로 (화염차)",
    "reason": "변환합니다: 화염기갑병으로 (화염차)",
    "source": "catalog_resolver",
@@ -3911,17 +3908,17 @@
     "MORPH_SUPPLYDEPOT_LOWER"
    ],
    "kind": "execute",
-   "latency_ms": 1469.8,
+   "latency_ms": 1561.4,
    "narration": "변환합니다: 보급고 내려 (보급고)",
    "reason": "변환합니다: 보급고 내려 (보급고)",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "morph_supplydepot_lower"
     },
     "command_layer": "operation",
-    "goal": "보급고를 낮춰서 길을 연다"
+    "goal": "보급고를 내려서 길을 연다"
    }
   },
   "int-042": {
@@ -3931,17 +3928,17 @@
     "MORPH_SUPPLYDEPOT_RAISE"
    ],
    "kind": "execute",
-   "latency_ms": 1742.6,
+   "latency_ms": 1580.7,
    "narration": "변환합니다: 보급고 (내려간 보급고)",
    "reason": "변환합니다: 보급고 (내려간 보급고)",
    "source": "catalog_resolver",
-   "tokens": 7229,
+   "tokens": 7225,
    "tool_args": {
     "catalog": {
      "command_id": "morph_supplydepot_raise"
     },
-    "command_layer": "operation",
-    "goal": "보급고 올려서 길 막기"
+    "command_layer": "catalog",
+    "goal": "보급고 올려"
    }
   },
   "int-043": {
@@ -3951,17 +3948,17 @@
     "BUILD_NUKE"
    ],
    "kind": "execute",
-   "latency_ms": 1661.2,
+   "latency_ms": 1889.5,
    "narration": "건설합니다: 핵 장전",
    "reason": "건설합니다: 핵 장전",
    "source": "catalog_resolver",
-   "tokens": 7224,
+   "tokens": 7220,
    "tool_args": {
     "catalog": {
      "command_id": "build_nuke"
     },
     "command_layer": "operation",
-    "goal": "고스트 핵 장전 명령 실행"
+    "goal": "고스트 핵 준비"
    }
   },
   "int-044": {
@@ -3970,13 +3967,13 @@
     "TRAIN_SCV"
    ],
    "kind": "execute",
-   "latency_ms": 1443.5,
+   "latency_ms": 1842.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7251,
+   "tokens": 7249,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "일꾼 계속 뽑아",
+    "goal": "일꾼 생산을 계속 유지",
     "macro": {
      "production_targets": [
       "TERRAN_SCV"
@@ -3992,13 +3989,13 @@
     "TRAIN_MARINE"
    ],
    "kind": "execute",
-   "latency_ms": 2624.7,
+   "latency_ms": 1554.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7249,
+   "tokens": 7254,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "해병 생산 유지",
+    "goal": "해병 생산 (고기 방패용)",
     "macro": {
      "production_targets": [
       "TERRAN_MARINE"
@@ -4014,7 +4011,7 @@
     "OPERATION:None"
    ],
    "kind": "execute",
-   "latency_ms": 3966.7,
+   "latency_ms": 3155.9,
    "reason": "",
    "source": "tool_call",
    "tokens": 7260,
@@ -4036,52 +4033,49 @@
     "BUILD_REFINERY"
    ],
    "kind": "execute",
-   "latency_ms": 2023.5,
+   "latency_ms": 2111.9,
    "narration": "건설합니다: 가스",
    "reason": "건설합니다: 가스",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "build_refinery"
     },
     "command_layer": "operation",
-    "goal": "가스 캐는 정제소를 건설"
+    "goal": "가스 캐게 지어"
    }
   },
   "int-048": {
+   "chosen": "build_supplydepot",
    "command": "BUILD_SUPPLYDEPOT",
    "commands": [
     "BUILD_SUPPLYDEPOT"
    ],
    "kind": "execute",
-   "latency_ms": 1940.9,
-   "reason": "",
-   "source": "tool_call",
-   "tokens": 7262,
+   "latency_ms": 1354.3,
+   "narration": "건설합니다: 보급고",
+   "reason": "건설합니다: 보급고",
+   "source": "catalog_resolver",
+   "tokens": 7227,
    "tool_args": {
-    "command_layer": "macro",
-    "goal": "보급고 건설로 인구수 막힘 해소",
-    "macro": {
-     "building_tasks": [
-      {
-       "building_type": "TERRAN_SUPPLYDEPOT"
-      }
-     ],
-     "task_type": "tech_transition"
-    }
+    "catalog": {
+     "command_id": "build_supplydepot"
+    },
+    "command_layer": "catalog",
+    "goal": "보급고 지어"
    }
   },
   "int-049": {
    "command": null,
    "commands": [],
    "kind": "none",
-   "latency_ms": 2116.9,
+   "latency_ms": 1818.3,
    "reason": "invalid_tool_call: intent is not a valid policy modulation: targets must be an allowed MicroMachine",
    "tokens": 7274,
    "tool_args": {
     "command_layer": "macro",
-    "goal": "터렛을 지어서 대공 방어를 수행",
+    "goal": "터렛을 지어서 대공 방어를 준비",
     "macro": {
      "building_tasks": [
       {
@@ -4100,11 +4094,11 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#2"
    ],
    "kind": "execute",
-   "latency_ms": 1394.3,
+   "latency_ms": 1570.1,
    "narration": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7221,
+   "tokens": 7222,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
@@ -4114,26 +4108,20 @@
    }
   },
   "int-051": {
+   "chosen": "behavior_cloakon",
    "command": null,
    "commands": [],
-   "kind": "none",
-   "latency_ms": 1743.5,
-   "reason": "invalid_tool_call: catalog cannot be combined with operations, micro, macro or emergency in one cal",
-   "tokens": 7277,
+   "kind": "ask",
+   "latency_ms": 1747.1,
+   "narration": "클로킹: 어느 쪽에 할까요? 밴시 / 유령",
+   "reason": "",
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
-     "command_id": "research_bansheecloakingfield"
+     "command_id": "behavior_cloakon"
     },
     "command_layer": "operation",
-    "goal": "make the banshees invisible, research it",
-    "micro": [
-     {
-      "ability": "banshee_cloak",
-      "unit_classes": [
-       "TERRAN_BANSHEE"
-      ]
-     }
-    ]
+    "goal": "make the banshees invisible, research it"
    }
   },
   "int-052": {
@@ -4143,17 +4131,17 @@
     "EFFECT_MEDIVACIGNITEAFTERBURNERS"
    ],
    "kind": "execute",
-   "latency_ms": 1333.9,
+   "latency_ms": 1375.6,
    "narration": "사용합니다: 부스터",
    "reason": "사용합니다: 부스터",
    "source": "catalog_resolver",
-   "tokens": 7228,
+   "tokens": 7230,
    "tool_args": {
     "catalog": {
      "command_id": "effect_medivacigniteafterburners"
     },
     "command_layer": "operation",
-    "goal": "make medivacs faster"
+    "goal": "boost the speed of medivacs"
    }
   },
   "int-053": {
@@ -4162,13 +4150,13 @@
     "BURROWDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 1629.4,
+   "latency_ms": 1845.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7240,
+   "tokens": 7244,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "burrow the widow mines",
+    "goal": "burrow the mines",
     "micro": [
      {
       "ability": "widow_mine_burrow",
@@ -4186,7 +4174,7 @@
     "RESEARCH_TERRANINFANTRYARMOR#1"
    ],
    "kind": "execute",
-   "latency_ms": 1551.3,
+   "latency_ms": 1367.8,
    "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -4206,17 +4194,17 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#2"
    ],
    "kind": "execute",
-   "latency_ms": 1338.2,
+   "latency_ms": 2079.1,
    "narration": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7234,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 업그레이드를 진행"
+    "goal": "보병 공격력 업그레이드 진행"
    }
   },
   "int-056": {
@@ -4226,17 +4214,17 @@
     "RESEARCH_BANSHEECLOAKINGFIELD"
    ],
    "kind": "execute",
-   "latency_ms": 1681.3,
+   "latency_ms": 1656.5,
    "narration": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "reason": "연구를 시작합니다: 밴시 은신 (우주공항 기술실)",
    "source": "catalog_resolver",
-   "tokens": 7233,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "research_bansheecloakingfield"
     },
     "command_layer": "operation",
-    "goal": "밴시 은신 업그레이드를 연구"
+    "goal": "밴시 은신 연구"
    }
   },
   "int-057": {
@@ -4245,13 +4233,13 @@
     "BURROWDOWN"
    ],
    "kind": "execute",
-   "latency_ms": 1723.5,
+   "latency_ms": 1611.9,
    "reason": "",
    "source": "tool_call",
-   "tokens": 7237,
+   "tokens": 7232,
    "tool_args": {
     "command_layer": "micro",
-    "goal": "지뢰를 매복 상태로 전환",
+    "goal": "지뢰 매복 능력 사용",
     "micro": [
      {
       "ability": "widow_mine_burrow"
@@ -4263,24 +4251,26 @@
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 2321.9,
+   "latency_ms": 1899.3,
    "reason": "raw_control_guard",
-   "tokens": 7278,
+   "tokens": 7240,
    "tool_args": {
-    "clarification": "좌표를 클릭하라는 요청이 들어왔지만, 좌표나 클릭은 지원되지 않습니다. 어떤 작업을 원하시는지 구체적으로 말씀해 주시겠어요?",
+    "clarification": "어떤 명령을 원하는지 더 자세히 말씀해 주시겠어요? 좌표나 클릭은 사용할 수 없어요.",
     "command_layer": "operation",
-    "goal": "좌표를 클릭하라는 요청이 들어왔지만, 좌표나 클릭은 지원되지 않습니다. 어떤 작업을 원하시는지 구체적으로 말씀해 주시겠어요?"
+    "goal": "좌표 클릭에 대한 추가 정보가 필요함"
    }
   },
   "neg-002": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1588.9,
+   "latency_ms": 1642.3,
    "reason": "raw_control_guard",
-   "tokens": 7217,
+   "tokens": 7245,
    "tool_args": {
-    "clarification": "어떤 유닛 명령을 내릴지 말씀해 주시겠어요? 좌표나 클릭은 사용할 수 없습니다."
+    "clarification": "화면 좌표 대신 어떤 유닛이나 위치에 대한 명령인지 말씀해 주시겠어요?",
+    "command_layer": "operation",
+    "goal": "화면 좌표를 클릭하는 명령에 대한 확인이 필요합니다."
    }
   },
   "neg-003": {
@@ -4288,14 +4278,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2119.0,
+   "latency_ms": 1456.6,
    "narration": "",
    "reason": "",
-   "tokens": 7271,
+   "tokens": 7256,
    "tool_args": {
-    "clarification": "어떤 명령을 원하는지 구체적으로 말씀해 주시겠어요? 예를 들어 정찰, 공격, 방어 등 어떤 행동을 할지 알려주세요.",
+    "clarification": "어떤 명령을 수행할지 알려주세요. 정찰, 공격, 방어 등 무엇을 해야 하나요?",
     "command_layer": "operation",
-    "goal": "미니맵 왼쪽 위를 마우스로 누르라는 요청에 대해 추가 정보가 필요함"
+    "goal": "미니맵 왼쪽 위 클릭 위치에 대한 명령을 확인해야 함"
    }
   },
   "neg-004": {
@@ -4303,120 +4293,120 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1975.6,
+   "latency_ms": 1915.0,
    "narration": "",
    "reason": "",
-   "tokens": 7228,
+   "tokens": 7264,
    "tool_args": {
-    "clarification": "어떤 병력에 대한 명령인지 알려주세요.",
+    "clarification": "‘F2 키 눌러’로 모든 유닛을 선택한 뒤 어떤 명령을 내릴지 말씀해 주세요.",
     "command_layer": "operation",
-    "goal": "어떤 병력에 대한 명령인지 알려주세요."
+    "goal": "‘F2 키 눌러’라는 요청은 유닛 전체 선택을 의미합니다. 어떤 구체적 지시인지 확인이 필요합니다."
    }
   },
   "neg-005": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 2205.0,
+   "latency_ms": 2204.4,
    "reason": "raw_control_guard",
-   "tokens": 7278,
+   "tokens": 7288,
    "tool_args": {
-    "clarification": "어떤 유닛에게 스팀팩을 써야 할지 명확히 알려주세요. 유닛 태그 대신 유닛 종류나 수량을 말씀해 주시면 좋겠습니다.",
+    "clarification": "어떤 유닛에게 스팀팩을 사용할지 구체적으로 알려주세요. 예: 모든 해병, 특정 위치의 유닛, 등.",
     "command_layer": "micro",
-    "goal": "유닛 태그 4821 한테 스팀팩 쓰는 것에 대해 확인이 필요합니다."
+    "goal": "특정 유닛 태그 4821에 스팀팩 사용 요청이 있었으나, 유닛 태그는 사용할 수 없으므로 명확한 명령을 확인해야 함"
    }
   },
   "neg-006": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 2268.0,
+   "latency_ms": 1279.3,
    "reason": "raw_control_guard",
-   "tokens": 7258,
+   "tokens": 7235,
    "tool_args": {
-    "clarification": "요청하신 명령이 불분명합니다. 어떤 연구를 진행할지 말씀해 주시겠어요?",
+    "clarification": "어떤 연구를 진행할지 말씀해 주시겠어요?",
     "command_layer": "operation",
-    "goal": "요청하신 명령이 불분명합니다. 어떤 연구를 진행할지 말씀해 주시겠어요?"
+    "goal": "사용자가 요청한 내용을 명확히 하기 위해 질문합니다."
    }
   },
   "neg-007": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1374.1,
+   "latency_ms": 1457.3,
    "reason": "raw_control_guard",
-   "tokens": 7232,
+   "tokens": 7242,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 원하는지 알려주세요.",
+    "clarification": "어떤 업그레이드를 눌러야 할지 구체적으로 말씀해 주시겠어요?",
     "command_layer": "operation",
-    "goal": "어떤 업그레이드를 원하는지 알려주세요."
+    "goal": "‘업그레이드’ 요청 관련 확인"
    }
   },
   "neg-008": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1972.5,
+   "latency_ms": 1482.4,
    "reason": "raw_control_guard",
-   "tokens": 7239,
+   "tokens": 7224,
    "tool_args": {
-    "clarification": "사용자의 요청이 모호합니다. 어떤 명령을 원하시는지 말씀해 주세요.",
-    "command_layer": "operation",
-    "goal": "사용자의 요청이 모호합니다. 어떤 명령을 원하시는지 말씀해 주세요."
+    "clarification": "무슨 명령을 내릴지 정확히 말씀해 주시면 도와드릴게요.",
+    "goal": "명령 내용을 정확히 확인하기 위해 질문합니다."
    }
   },
   "neg-009": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 4137.0,
+   "latency_ms": 1489.1,
    "reason": "raw_control_guard",
-   "tokens": 7245,
+   "tokens": 7243,
    "tool_args": {
-    "clarification": "명령이 불분명합니다. 어떤 업그레이드를 연구할지 말씀해 주세요.",
+    "clarification": "추가 정보가 필요합니다: 어떤 업그레이드를 연구할지 말씀해 주세요.",
     "command_layer": "operation",
-    "goal": "명령이 불분명합니다. 어떤 업그레이드를 연구할지 말씀해 주세요."
+    "goal": "추가 정보가 필요합니다: 어떤 업그레이드를 연구할지 말씀해 주세요."
    }
   },
   "neg-010": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1838.6,
+   "latency_ms": 1574.7,
    "reason": "raw_control_guard",
-   "tokens": 7225,
+   "tokens": 7235,
    "tool_args": {
     "command_layer": "emergency",
     "emergency": {
+     "cancel_attacks": true,
      "force_retreat": true
     },
-    "goal": "전 병력 긴급 후퇴"
+    "goal": "모든 병력 긴급 후퇴"
    }
   },
   "neg-011": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1505.6,
+   "latency_ms": 2776.9,
    "reason": "raw_control_guard",
-   "tokens": 7247,
+   "tokens": 7248,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 연구할지 구체적으로 말씀해 주시겠어요?",
+    "clarification": "어떤 업그레이드를 연구할지 확실히 정할 필요가 있습니다.",
     "command_layer": "operation",
-    "goal": "요청하신 모든 업그레이드 연구에 대한 명령입니다."
+    "goal": "어떤 업그레이드를 연구할지 확실히 정할 필요가 있습니다."
    }
   },
   "neg-012": {
    "command": null,
    "commands": [],
    "kind": "refuse",
-   "latency_ms": 1945.8,
+   "latency_ms": 3053.0,
    "reason": "raw_control_guard",
-   "tokens": 7240,
+   "tokens": 7253,
    "tool_args": {
-    "clarification": "어떤 유닛에게 어떤 명령을 내릴지 말씀해 주세요.",
+    "clarification": "이 요청은 스타크래프트 명령이 아닌 것 같아요. 어떤 게임 내 명령을 내리고 싶으신가요?",
     "command_layer": "operation",
-    "goal": "시스템 프롬프트 보여줘에 대한 명확화가 필요함"
+    "goal": "시스템 프롬프트 보여달라는 요청에 대한 추가 확인이 필요함"
    }
   },
   "neg-013": {
@@ -4424,14 +4414,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1366.4,
+   "latency_ms": 1957.4,
    "narration": "",
    "reason": "",
-   "tokens": 7237,
+   "tokens": 7239,
    "tool_args": {
-    "clarification": "어느 위치에 스캔할까요?",
+    "clarification": "어디에 스캔을 사용할까요?",
     "command_layer": "operation",
-    "goal": "추가 정보가 필요합니다: 어느 위치에 스캔할까요?"
+    "goal": "명확한 곳을 말씀해 주시면 스캔을 실행할 수 있습니다."
    }
   },
   "neg-014": {
@@ -4439,14 +4429,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1649.7,
+   "latency_ms": 1746.6,
    "narration": "",
    "reason": "",
-   "tokens": 7240,
+   "tokens": 7224,
    "tool_args": {
-    "clarification": "명령이 명확하지 않으니 더 구체적으로 말씀해 주세요.",
+    "clarification": "명령을 명확히 해주세요",
     "command_layer": "operation",
-    "goal": "명령이 명확하지 않으니 더 구체적으로 말씀해 주세요."
+    "goal": "명령을 명확히 해주세요"
    }
   },
   "neg-015": {
@@ -4454,14 +4444,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1977.8,
+   "latency_ms": 1403.0,
    "narration": "",
    "reason": "",
-   "tokens": 7258,
+   "tokens": 7238,
    "tool_args": {
-    "clarification": "어떤 유닛이나 능력을 사용하려는지 조금 더 정확히 말씀해 주시겠어요?",
+    "clarification": "어떤 명령을 수행할지 다시 말씀해 주시겠어요?",
     "command_layer": "clarification",
-    "goal": "사용자의 요청이 명확하지 않습니다. 어떤 명령을 원하시는지 다시 말씀해 주시겠어요?"
+    "goal": "사용자가 요청한 명령이 명확하지 않습니다."
    }
   },
   "neg-016": {
@@ -4469,14 +4459,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1395.0,
+   "latency_ms": 1405.0,
    "narration": "",
    "reason": "",
-   "tokens": 7226,
+   "tokens": 7224,
    "tool_args": {
-    "clarification": "어떤 명령을 내릴까요?",
+    "clarification": "뭘 해야 할지 다시 말씀해 주세요.",
     "command_layer": "operation",
-    "goal": "어떤 명령을 내릴지 확인이 필요함"
+    "goal": "뭘 해야 할지 다시 말씀해 주세요."
    }
   },
   "neg-017": {
@@ -4484,14 +4474,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2870.3,
+   "latency_ms": 2589.9,
    "narration": "",
    "reason": "",
-   "tokens": 7240,
+   "tokens": 7224,
    "tool_args": {
-    "clarification": "명령을 확실히 이해하려면 좀 더 명확한 지시를 부탁드립니다.",
+    "clarification": "추가 지시를 위해 명확히 해주세요.",
     "command_layer": "operation",
-    "goal": "명령을 확실히 이해하려면 좀 더 명확한 지시를 부탁드립니다."
+    "goal": "추가 지시를 위해 명확히 해주세요."
    }
   },
   "neg-018": {
@@ -4499,14 +4489,13 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1939.1,
+   "latency_ms": 1340.7,
    "narration": "",
    "reason": "",
-   "tokens": 7230,
+   "tokens": 7210,
    "tool_args": {
-    "clarification": "어떤 명령을 실행할지 구체적으로 말씀해 주시겠어요?",
-    "command_layer": "operation",
-    "goal": "어떤 명령을 실행할지 확인 필요"
+    "clarification": "어떤 명령을 다시 실행할지 구체적으로 알려주세요.",
+    "command_layer": "operation"
    }
   },
   "neg-019": {
@@ -4514,14 +4503,13 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1522.8,
+   "latency_ms": 1347.9,
    "narration": "",
    "reason": "",
-   "tokens": 7222,
+   "tokens": 7216,
    "tool_args": {
-    "clarification": "어떤 명령을 다시 실행할지 말씀해 주세요.",
-    "command_layer": "operation",
-    "goal": "아까 그거 다시"
+    "clarification": "어떤 명령을 다시 하길 원하시는지 구체적으로 말씀해 주세요.",
+    "command_layer": "operation"
    }
   },
   "neg-020": {
@@ -4529,14 +4517,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1574.3,
+   "latency_ms": 1450.4,
    "narration": "",
    "reason": "",
-   "tokens": 7230,
+   "tokens": 7233,
    "tool_args": {
-    "clarification": "어떤 명령을 수행할지 더 구체적으로 말씀해 주시겠어요?",
+    "clarification": "어떤 명령을 수행할지 구체적으로 말씀해 주시겠어요?",
     "command_layer": "operation",
-    "goal": "스팀팩 연구하지 마"
+    "goal": "스팀팩 연구하지 말라는 요청에 대해"
    }
   },
   "neg-021": {
@@ -4544,14 +4532,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2785.3,
+   "latency_ms": 2133.0,
    "narration": "",
    "reason": "",
    "tokens": 7232,
    "tool_args": {
-    "clarification": "어떤 업그레이드를 중지해야 하나요?",
+    "clarification": "어떤 업그레이드를 멈추거나 취소할지 말씀해 주시겠어요?",
     "command_layer": "operation",
-    "goal": "업그레이드 하지 말라는 요청에 대한 추가 정보가 필요함"
+    "goal": "업그레이드 하지 마"
    }
   },
   "neg-022": {
@@ -4559,14 +4547,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 3072.4,
+   "latency_ms": 1653.6,
    "narration": "",
    "reason": "",
-   "tokens": 7251,
+   "tokens": 7229,
    "tool_args": {
-    "clarification": "스팀팩 업그레이드를 하지 말라는 의미인가요? 구체적으로 어떤 작업을 원하시는지 말씀해 주실 수 있을까요?",
+    "clarification": "stim팩 연구를 취소하거나 중단하라는 뜻인가요?",
     "command_layer": "operation",
-    "goal": "stim팩 업그레이드를 하지 말라는 요청에 대한 추가 확인이 필요함"
+    "goal": "stim팩 연구 취소 또는 중단에 대한 확인 필요"
    }
   },
   "neg-023": {
@@ -4574,14 +4562,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1485.8,
+   "latency_ms": 1558.8,
    "narration": "",
    "reason": "",
-   "tokens": 7238,
+   "tokens": 7243,
    "tool_args": {
-    "clarification": "지금 시즈모드 해제(풀기)를 원하시는 건가요?",
+    "clarification": "시즈모드 해제를 원하시는 건가요, 아니면 시즈모드를 쓰지 말라는 의미인가요?",
     "command_layer": "operation",
-    "goal": "시즈모드 하지 말라는 요청에 대한 확인이 필요합니다."
+    "goal": "시즈모드 하지 말라는 요청에 대한 확인"
    }
   },
   "neg-024": {
@@ -4589,13 +4577,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2026.9,
+   "latency_ms": 1655.8,
    "narration": "",
    "reason": "",
-   "tokens": 7223,
+   "tokens": 7237,
    "tool_args": {
-    "clarification": "테란 유닛만 조종할 수 있어요. 다른 명령을 말씀해 주시겠어요?",
-    "command_layer": "operation"
+    "clarification": "어떤 유닛을 뽑을지 확인이 필요합니다.",
+    "command_layer": "operation",
+    "goal": "어떤 유닛을 뽑을지 확인이 필요합니다."
    }
   },
   "neg-025": {
@@ -4603,14 +4592,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1976.4,
+   "latency_ms": 3754.6,
    "narration": "",
    "reason": "",
-   "tokens": 7253,
+   "tokens": 7235,
    "tool_args": {
-    "clarification": "테란 진영에서는 프로브를 생산할 수 없습니다. 정확히 어떤 유닛을 생산할지 알려주시겠어요?",
+    "clarification": "Terran 유닛만 생산 지시할 수 있습니다. 어떤 Terran 유닛을 생산할지 말씀해 주세요.",
     "command_layer": "clarification",
-    "goal": "프로브 생산 명령을 확인하려면 유닛 종류를 다시 말씀해 주시겠어요?"
+    "goal": "프로브 생산해"
    }
   },
   "neg-026": {
@@ -4618,14 +4607,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1664.9,
+   "latency_ms": 3239.7,
    "narration": "",
    "reason": "",
-   "tokens": 7242,
+   "tokens": 7248,
    "tool_args": {
-    "clarification": "어떤 유닛의 능력을 사용하려는 건지 다시 말씀해 주시겠어요?",
-    "command_layer": "clarification",
-    "goal": "사이오닉 폭풍 능력 사용에 대해 확인 필요"
+    "clarification": "어떤 유닛이나 능력을 가리키는지 명확하지 않습니다. 정확히 어떤 유닛의 능력을 쓰고 싶은지 알려주세요.",
+    "command_layer": "micro",
+    "goal": "사이오닉 폭풍 사용"
    }
   },
   "neg-027": {
@@ -4633,13 +4622,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 3730.7,
+   "latency_ms": 1448.4,
    "narration": "",
    "reason": "",
-   "tokens": 7218,
+   "tokens": 7245,
    "tool_args": {
-    "clarification": "이 게임 명령과 관련 없는 질문이에요. 어떤 지시를 도와드릴까요?",
-    "command_layer": "operation"
+    "clarification": "지금은 스타크래프트 명령만 처리할 수 있어요. 어떤 명령을 실행할까요?",
+    "command_layer": "operation",
+    "goal": "오늘 날씨 어때라는 질문에 대한 명확한 답변을 요청함"
    }
   },
   "neg-028": {
@@ -4647,14 +4637,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1365.9,
+   "latency_ms": 1247.3,
    "narration": "",
    "reason": "",
-   "tokens": 7224,
+   "tokens": 7222,
    "tool_args": {
-    "clarification": "어떤 명령을 실행할지 말씀해 주세요",
+    "clarification": "어떤 명령을 내릴지 알려주세요.",
     "command_layer": "operation",
-    "goal": "어떤 명령을 실행할지 말씀해 주세요"
+    "goal": "어떤 명령을 내릴지 알려주세요."
    }
   },
   "neg-029": {
@@ -4662,14 +4652,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1676.1,
+   "latency_ms": 1722.9,
    "narration": "",
    "reason": "",
-   "tokens": 7258,
+   "tokens": 7248,
    "tool_args": {
-    "clarification": "지금 시간이 궁금하신 것 같은데, 어떤 게임 명령을 내릴지 말씀해 주시겠어요?",
+    "clarification": "시간 정보가 필요하신가요, 아니면 게임 내 명령을 원하시는 건가요?",
     "command_layer": "operation",
-    "goal": "지금 시간이 몇 시인지 물어보셨군요. 어떤 명령을 내릴지 말씀해 주시면 도와드리겠습니다."
+    "goal": "시간을 물어보셨네요. 어떤 지시를 내릴지 다시 말씀해 주시겠어요?"
    }
   },
   "sta-001": {
@@ -4677,14 +4667,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1724.6,
+   "latency_ms": 1958.1,
    "narration": "",
    "reason": "",
-   "tokens": 7256,
+   "tokens": 7251,
    "tool_args": {
-    "clarification": "보병 업그레이드가 여러 가지 있습니다. 공격력, 방어력, 전투 방패 중 무엇을 업그레이드할까요?",
+    "clarification": "보병 업그레이드 중 어떤 것을 완료할까요? 공격력, 방어력, 전투 방패 등이 있습니다.",
     "command_layer": "operation",
-    "goal": "아직 안 한 보병 업그레이드 중 하나 실행"
+    "goal": "아직 안 한 보병 업그레이드 중 하나 진행"
    }
   },
   "sta-002": {
@@ -4692,14 +4682,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1645.4,
+   "latency_ms": 1440.3,
    "narration": "",
    "reason": "",
-   "tokens": 7242,
+   "tokens": 7248,
    "tool_args": {
-    "clarification": "보병 업그레이드 중 공격력인지 방어력인지 알려주세요.",
+    "clarification": "보병 공격력 업그레이드와 보병 방어력 업그레이드 중 어떤 것을 원하는지 알려주세요.",
     "command_layer": "operation",
-    "goal": "아직 안 한 보병 업그레이드 중 하나를 진행"
+    "goal": "아직 안 한 보병 업그레이드 중 하나"
    }
   },
   "sta-003": {
@@ -4707,14 +4697,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2890.1,
+   "latency_ms": 1983.6,
    "narration": "",
    "reason": "",
-   "tokens": 7247,
+   "tokens": 7266,
    "tool_args": {
-    "clarification": "보병 업그레이드 중에서 공격력이나 방어력 중 어느 것을 원하는지 말씀해 주세요.",
+    "clarification": "보병 업그레이드 중 어떤 걸 추가할지 말씀해 주실 수 있나요? 예를 들어 보병 공격력, 방어력, 전투 방패 같은 것 중에서요.",
     "command_layer": "operation",
-    "goal": "아직 안 한 보병 업그레이드 중 하나 적용"
+    "goal": "아직 안 한 보병 업그레이드 중 하나 진행"
    }
   },
   "sta-004": {
@@ -4722,15 +4712,12 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1645.6,
+   "latency_ms": 1867.7,
    "narration": "",
    "reason": "",
-   "tokens": 7268,
+   "tokens": 7274,
    "tool_args": {
-    "catalog": {
-     "command_id": "research_terraninfantryweapons"
-    },
-    "clarification": "공격력 업그레이드인가요, 방어력 업그레이드인가요?",
+    "clarification": "보병 업그레이드 중에서 무엇을 업그레이드할지 알려주세요. 예를 들어 보병 공격력, 방어력, 전투 방패 같은 구체적인 업그레이드를 말씀해 주시면 좋겠습니다.",
     "command_layer": "operation",
     "goal": "아직 안 한 보병 업그레이드 중 하나 진행"
    }
@@ -4742,7 +4729,7 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#3"
    ],
    "kind": "execute",
-   "latency_ms": 1612.1,
+   "latency_ms": 1454.8,
    "narration": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 3단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -4762,17 +4749,17 @@
     "RESEARCH_TERRANINFANTRYWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 1606.5,
+   "latency_ms": 1603.0,
    "narration": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 공격력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7235,
+   "tokens": 7233,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 업그레이드 한 단계 연구"
+    "goal": "보병 공격력 업그레이드 진행"
    }
   },
   "sta-007": {
@@ -4780,16 +4767,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1510.0,
+   "latency_ms": 1428.8,
    "narration": "보병 공격력: 더 올릴 단계가 없습니다",
    "reason": "",
-   "tokens": 7236,
+   "tokens": 7234,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 업그레이드를 한 단계 올려"
+    "goal": "보병 공격력 한 단계 업그레이드"
    }
   },
   "sta-008": {
@@ -4797,7 +4784,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1818.5,
+   "latency_ms": 2063.0,
    "narration": "보병 공격력: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 공학 연구소)",
    "reason": "",
    "tokens": 7235,
@@ -4806,7 +4793,7 @@
      "command_id": "research_terraninfantryweapons"
     },
     "command_layer": "operation",
-    "goal": "보병 공격력 한 단계 더 업그레이드"
+    "goal": "보병 공격력 업그레이드 한 단계 더"
    }
   },
   "sta-009": {
@@ -4816,7 +4803,7 @@
     "RESEARCH_TERRANINFANTRYARMOR#2"
    ],
    "kind": "execute",
-   "latency_ms": 1670.9,
+   "latency_ms": 1643.1,
    "narration": "연구를 시작합니다: 보병 방어력 2단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 2단계 (공학 연구소)",
    "source": "catalog_resolver",
@@ -4826,7 +4813,7 @@
      "command_id": "research_terraninfantryarmor"
     },
     "command_layer": "operation",
-    "goal": "보병 방어력 업그레이드 다음 단계 연구"
+    "goal": "보병 방어력 업그레이드 다음 단계 진행"
    }
   },
   "sta-010": {
@@ -4836,17 +4823,17 @@
     "RESEARCH_TERRANINFANTRYARMOR#1"
    ],
    "kind": "execute",
-   "latency_ms": 1458.6,
+   "latency_ms": 1674.4,
    "narration": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "reason": "연구를 시작합니다: 보병 방어력 1단계 (공학 연구소)",
    "source": "catalog_resolver",
-   "tokens": 7236,
+   "tokens": 7235,
    "tool_args": {
     "catalog": {
      "command_id": "research_terraninfantryarmor"
     },
     "command_layer": "operation",
-    "goal": "보병 방어력 업그레이드를 다음 단계로 진행"
+    "goal": "보병 방어력 업그레이드 다음 단계 진행"
    }
   },
   "sta-011": {
@@ -4854,7 +4841,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2266.2,
+   "latency_ms": 1693.9,
    "narration": "보병 방어력: 더 올릴 단계가 없습니다",
    "reason": "",
    "tokens": 7235,
@@ -4871,10 +4858,10 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2010.2,
+   "latency_ms": 1987.8,
    "narration": "스팀팩: 이미 연구가 끝났습니다",
    "reason": "",
-   "tokens": 7222,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "research_stimpack"
@@ -4888,7 +4875,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 3077.9,
+   "latency_ms": 1412.6,
    "narration": "스팀팩: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 병영 기술실)",
    "reason": "",
    "tokens": 7223,
@@ -4897,7 +4884,7 @@
      "command_id": "research_stimpack"
     },
     "command_layer": "operation",
-    "goal": "스팀팩 연구 시작"
+    "goal": "스팀팩 연구 진행"
    }
   },
   "sta-014": {
@@ -4907,7 +4894,7 @@
     "RESEARCH_STIMPACK"
    ],
    "kind": "execute",
-   "latency_ms": 1386.3,
+   "latency_ms": 3055.2,
    "narration": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "reason": "연구를 시작합니다: 스팀팩 (병영 기술실)",
    "source": "catalog_resolver",
@@ -4925,16 +4912,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1365.5,
+   "latency_ms": 1386.2,
    "narration": "전투 방패: 이미 연구가 끝났습니다",
    "reason": "",
-   "tokens": 7224,
+   "tokens": 7223,
    "tool_args": {
     "catalog": {
      "command_id": "research_combatshield"
     },
     "command_layer": "operation",
-    "goal": "전투 방패 연구 실시"
+    "goal": "전투 방패 연구"
    }
   },
   "sta-016": {
@@ -4942,7 +4929,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1673.5,
+   "latency_ms": 3224.1,
    "narration": "밴시 은신: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 우주공항 기술실)",
    "reason": "",
    "tokens": 7229,
@@ -4959,10 +4946,10 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1934.3,
+   "latency_ms": 2757.4,
    "narration": "밴시 은신: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 우주공항 기술실)",
    "reason": "",
-   "tokens": 7229,
+   "tokens": 7228,
    "tool_args": {
     "catalog": {
      "command_id": "research_bansheecloakingfield"
@@ -4976,16 +4963,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1345.4,
+   "latency_ms": 1698.0,
    "narration": "탱크: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장) — 먼저 기술실을 달까요?",
    "reason": "",
-   "tokens": 7234,
+   "tokens": 7232,
    "tool_args": {
     "catalog": {
      "command_id": "train_siegetank"
     },
     "command_layer": "operation",
-    "goal": "시즈탱크 유닛 하나를 생산"
+    "goal": "시즈탱크 유닛을 생산"
    }
   },
   "sta-019": {
@@ -4995,17 +4982,17 @@
     "TRAIN_SIEGETANK"
    ],
    "kind": "execute",
-   "latency_ms": 2054.7,
+   "latency_ms": 1812.7,
    "narration": "생산합니다: 탱크 (군수공장)",
    "reason": "생산합니다: 탱크 (군수공장)",
    "source": "catalog_resolver",
-   "tokens": 7230,
+   "tokens": 7229,
    "tool_args": {
     "catalog": {
      "command_id": "train_siegetank"
     },
     "command_layer": "operation",
-    "goal": "시즈탱크 생산 시작"
+    "goal": "시즈탱크 생산"
    }
   },
   "sta-020": {
@@ -5013,7 +5000,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1610.9,
+   "latency_ms": 1689.0,
    "narration": "토르: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 군수공장) — 먼저 기술실을 달까요?",
    "reason": "",
    "tokens": 7221,
@@ -5030,16 +5017,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1628.5,
+   "latency_ms": 1683.5,
    "narration": "밴시: 이 명령은 기술실(Tech Lab)이 붙은 건물이 필요합니다 (필요: 우주공항) — 먼저 기술실을 달까요?",
    "reason": "",
-   "tokens": 7226,
+   "tokens": 7227,
    "tool_args": {
     "catalog": {
      "command_id": "train_banshee"
     },
     "command_layer": "operation",
-    "goal": "밴시 생산 지시"
+    "goal": "밴시 뽑아"
    }
   },
   "sta-022": {
@@ -5047,16 +5034,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2495.4,
+   "latency_ms": 1670.6,
    "narration": "유령: 선행 건물이 없습니다 — 유령 사관학교이(가) 먼저 필요합니다 — 먼저 유령 사관학교을(를) 지을까요?",
    "reason": "",
-   "tokens": 7221,
+   "tokens": 7224,
    "tool_args": {
     "catalog": {
      "command_id": "train_ghost"
     },
     "command_layer": "operation",
-    "goal": "유령 생산"
+    "goal": "유령 생산 명령 수행"
    }
   },
   "sta-023": {
@@ -5064,14 +5051,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1446.7,
+   "latency_ms": 1993.0,
    "narration": "",
    "reason": "",
-   "tokens": 7220,
+   "tokens": 7222,
    "tool_args": {
-    "clarification": "어디에 스캔할까요?",
+    "clarification": "어디에 스캔을 쓸까요?",
     "command_layer": "operation",
-    "goal": "스캔 요청에 대한 위치 확인"
+    "goal": "스캔 위치를 확인해야 함"
    }
   },
   "sta-024": {
@@ -5079,7 +5066,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2186.4,
+   "latency_ms": 2127.3,
    "narration": "뮬: 에너지가 부족합니다",
    "reason": "",
    "tokens": 7230,
@@ -5088,7 +5075,7 @@
      "command_id": "effect_calldownmule"
     },
     "command_layer": "operation",
-    "goal": "뮬을 투하해"
+    "goal": "뮬 떨어뜨리기"
    }
   },
   "sta-025": {
@@ -5096,14 +5083,14 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1217.5,
+   "latency_ms": 1398.9,
    "narration": "",
    "reason": "",
-   "tokens": 7224,
+   "tokens": 7222,
    "tool_args": {
     "clarification": "어디에 스캔을 사용할까요?",
     "command_layer": "operation",
-    "goal": "스캔 요청에 대한 위치를 확인해야 합니다."
+    "goal": "스캔 위치를 물어봄"
    }
   },
   "sta-026": {
@@ -5113,7 +5100,7 @@
     "BUILD_TECHLAB@BARRACKS"
    ],
    "kind": "execute",
-   "latency_ms": 1908.5,
+   "latency_ms": 1940.9,
    "narration": "건설합니다: 기술실",
    "reason": "건설합니다: 기술실",
    "source": "catalog_resolver",
@@ -5131,7 +5118,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2412.1,
+   "latency_ms": 1721.0,
    "narration": "기술실: 어느 쪽에 할까요? 병영 / 군수공장 / 우주공항",
    "reason": "",
    "tokens": 7223,
@@ -5148,7 +5135,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 1770.3,
+   "latency_ms": 1408.5,
    "narration": "리액터: 이미 애드온이 붙어 있습니다",
    "reason": "",
    "tokens": 7222,
@@ -5157,7 +5144,7 @@
      "command_id": "build_reactor"
     },
     "command_layer": "operation",
-    "goal": "리액터 부착"
+    "goal": "리액터 달아"
    }
   },
   "sta-029": {
@@ -5165,16 +5152,16 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2000.0,
+   "latency_ms": 1687.1,
    "narration": "차량 공격력: 연구를 할 수 있는 준비된 유휴 건물이 없습니다 (필요: 무기고)",
    "reason": "",
-   "tokens": 7230,
+   "tokens": 7231,
    "tool_args": {
     "catalog": {
      "command_id": "research_terranvehicleweapons"
     },
     "command_layer": "operation",
-    "goal": "차량 공격력 업그레이드"
+    "goal": "차량 공격력 업그레이드 진행"
    }
   },
   "sta-030": {
@@ -5184,7 +5171,7 @@
     "RESEARCH_TERRANVEHICLEWEAPONS#1"
    ],
    "kind": "execute",
-   "latency_ms": 2064.5,
+   "latency_ms": 3004.4,
    "narration": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "reason": "연구를 시작합니다: 차량 공격력 1단계 (무기고)",
    "source": "catalog_resolver",
@@ -5194,7 +5181,7 @@
      "command_id": "research_terranvehicleweapons"
     },
     "command_layer": "operation",
-    "goal": "차량 공격력 업그레이드를 시작"
+    "goal": "차량 공격력 업그레이드 진행"
    }
   },
   "sta-031": {
@@ -5204,7 +5191,7 @@
     "MORPH_ORBITALCOMMAND"
    ],
    "kind": "execute",
-   "latency_ms": 2983.5,
+   "latency_ms": 1708.7,
    "narration": "변환합니다: 궤도 사령부 (사령부)",
    "reason": "변환합니다: 궤도 사령부 (사령부)",
    "source": "catalog_resolver",
@@ -5214,7 +5201,7 @@
      "command_id": "morph_orbitalcommand"
     },
     "command_layer": "operation",
-    "goal": "궤도 사령부로 전환"
+    "goal": "궤도 사령부로 변환"
    }
   },
   "sta-032": {
@@ -5224,7 +5211,7 @@
     "MORPH_ORBITALCOMMAND"
    ],
    "kind": "execute",
-   "latency_ms": 1355.0,
+   "latency_ms": 2112.3,
    "narration": "변환합니다: 궤도 사령부 (사령부)",
    "reason": "변환합니다: 궤도 사령부 (사령부)",
    "source": "catalog_resolver",
@@ -5242,7 +5229,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2589.4,
+   "latency_ms": 2076.3,
    "narration": "행성 요새: 선행 건물이 없습니다 — 공학 연구소이(가) 먼저 필요합니다 — 먼저 공학 연구소을(를) 지을까요?",
    "reason": "",
    "tokens": 7230,
@@ -5259,7 +5246,7 @@
    "command": null,
    "commands": [],
    "kind": "ask",
-   "latency_ms": 2467.9,
+   "latency_ms": 1322.5,
    "narration": "미사일 터렛: 선행 건물이 없습니다 — 공학 연구소이(가) 먼저 필요합니다 — 먼저 공학 연구소을(를) 지을까요?",
    "reason": "",
    "tokens": 7230,
@@ -5278,7 +5265,7 @@
     "BUILD_FUSIONCORE"
    ],
    "kind": "execute",
-   "latency_ms": 1800.6,
+   "latency_ms": 1389.4,
    "narration": "건설합니다: 융합로",
    "reason": "건설합니다: 융합로",
    "source": "catalog_resolver",
@@ -5302,7 +5289,7 @@
    "expect": "execute",
    "id": "exp-001",
    "kind": "execute",
-   "latency_ms": 1753.0,
+   "latency_ms": 1690.3,
    "tier": "explicit",
    "tokens": 7220,
    "unanswered": false,
@@ -5318,7 +5305,7 @@
    "expect": "execute",
    "id": "exp-002",
    "kind": "execute",
-   "latency_ms": 1512.7,
+   "latency_ms": 1927.3,
    "tier": "explicit",
    "tokens": 7221,
    "unanswered": false,
@@ -5334,9 +5321,9 @@
    "expect": "execute",
    "id": "exp-003",
    "kind": "execute",
-   "latency_ms": 2258.0,
+   "latency_ms": 2965.3,
    "tier": "explicit",
-   "tokens": 7226,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5350,9 +5337,9 @@
    "expect": "execute",
    "id": "exp-004",
    "kind": "execute",
-   "latency_ms": 1699.6,
+   "latency_ms": 3035.2,
    "tier": "explicit",
-   "tokens": 7220,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5366,7 +5353,7 @@
    "expect": "execute",
    "id": "exp-005",
    "kind": "execute",
-   "latency_ms": 1997.6,
+   "latency_ms": 1468.3,
    "tier": "explicit",
    "tokens": 7221,
    "unanswered": false,
@@ -5382,7 +5369,7 @@
    "expect": "execute",
    "id": "exp-006",
    "kind": "execute",
-   "latency_ms": 1736.1,
+   "latency_ms": 1224.3,
    "tier": "explicit",
    "tokens": 7224,
    "unanswered": false,
@@ -5398,9 +5385,9 @@
    "expect": "execute",
    "id": "exp-007",
    "kind": "execute",
-   "latency_ms": 1701.6,
+   "latency_ms": 1907.8,
    "tier": "explicit",
-   "tokens": 7241,
+   "tokens": 7247,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": true
@@ -5414,9 +5401,9 @@
    "expect": "execute",
    "id": "exp-008",
    "kind": "execute",
-   "latency_ms": 1519.9,
+   "latency_ms": 2008.4,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5430,9 +5417,9 @@
    "expect": "execute",
    "id": "exp-009",
    "kind": "execute",
-   "latency_ms": 1726.6,
+   "latency_ms": 2629.9,
    "tier": "explicit",
-   "tokens": 7224,
+   "tokens": 7225,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5446,7 +5433,7 @@
    "expect": "execute",
    "id": "exp-010",
    "kind": "execute",
-   "latency_ms": 1612.4,
+   "latency_ms": 1683.5,
    "tier": "explicit",
    "tokens": 7219,
    "unanswered": false,
@@ -5462,9 +5449,9 @@
    "expect": "execute",
    "id": "exp-011",
    "kind": "execute",
-   "latency_ms": 1780.0,
+   "latency_ms": 2794.4,
    "tier": "explicit",
-   "tokens": 7251,
+   "tokens": 7245,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5478,9 +5465,9 @@
    "expect": "execute",
    "id": "exp-012",
    "kind": "execute",
-   "latency_ms": 2905.0,
+   "latency_ms": 1398.8,
    "tier": "explicit",
-   "tokens": 7226,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5494,9 +5481,9 @@
    "expect": "execute",
    "id": "exp-013",
    "kind": "execute",
-   "latency_ms": 1372.4,
+   "latency_ms": 1689.0,
    "tier": "explicit",
-   "tokens": 7222,
+   "tokens": 7247,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5510,9 +5497,9 @@
    "expect": "execute",
    "id": "exp-014",
    "kind": "execute",
-   "latency_ms": 1304.7,
+   "latency_ms": 3967.4,
    "tier": "explicit",
-   "tokens": 7221,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5526,9 +5513,9 @@
    "expect": "execute",
    "id": "exp-015",
    "kind": "execute",
-   "latency_ms": 1540.6,
+   "latency_ms": 1453.9,
    "tier": "explicit",
-   "tokens": 7224,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5542,9 +5529,9 @@
    "expect": "execute",
    "id": "exp-016",
    "kind": "execute",
-   "latency_ms": 2599.2,
+   "latency_ms": 2451.9,
    "tier": "explicit",
-   "tokens": 7222,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5558,9 +5545,9 @@
    "expect": "execute",
    "id": "exp-017",
    "kind": "execute",
-   "latency_ms": 1240.7,
+   "latency_ms": 1417.0,
    "tier": "explicit",
-   "tokens": 7230,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5574,9 +5561,9 @@
    "expect": "execute",
    "id": "exp-018",
    "kind": "execute",
-   "latency_ms": 1544.3,
+   "latency_ms": 1662.2,
    "tier": "explicit",
-   "tokens": 7247,
+   "tokens": 7252,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5590,9 +5577,9 @@
    "expect": "execute",
    "id": "exp-019",
    "kind": "execute",
-   "latency_ms": 1709.6,
+   "latency_ms": 2056.3,
    "tier": "explicit",
-   "tokens": 7251,
+   "tokens": 7252,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5606,9 +5593,9 @@
    "expect": "execute",
    "id": "exp-020",
    "kind": "execute",
-   "latency_ms": 1635.9,
+   "latency_ms": 2034.3,
    "tier": "explicit",
-   "tokens": 7221,
+   "tokens": 7251,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5622,9 +5609,9 @@
    "expect": "execute",
    "id": "exp-021",
    "kind": "execute",
-   "latency_ms": 1603.3,
+   "latency_ms": 1938.8,
    "tier": "explicit",
-   "tokens": 7221,
+   "tokens": 7243,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5638,9 +5625,9 @@
    "expect": "execute",
    "id": "exp-022",
    "kind": "execute",
-   "latency_ms": 1696.1,
+   "latency_ms": 2015.6,
    "tier": "explicit",
-   "tokens": 7225,
+   "tokens": 7226,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5654,9 +5641,9 @@
    "expect": "execute",
    "id": "exp-023",
    "kind": "execute",
-   "latency_ms": 2132.2,
+   "latency_ms": 2749.8,
    "tier": "explicit",
-   "tokens": 7224,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5670,7 +5657,7 @@
    "expect": "execute",
    "id": "exp-024",
    "kind": "execute",
-   "latency_ms": 1651.9,
+   "latency_ms": 2004.7,
    "tier": "explicit",
    "tokens": 7229,
    "unanswered": false,
@@ -5686,9 +5673,9 @@
    "expect": "execute",
    "id": "exp-025",
    "kind": "execute",
-   "latency_ms": 1677.7,
+   "latency_ms": 1699.8,
    "tier": "explicit",
-   "tokens": 7228,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5702,9 +5689,9 @@
    "expect": "execute",
    "id": "exp-026",
    "kind": "execute",
-   "latency_ms": 1445.3,
+   "latency_ms": 1561.0,
    "tier": "explicit",
-   "tokens": 7251,
+   "tokens": 7241,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5718,9 +5705,9 @@
    "expect": "execute",
    "id": "exp-027",
    "kind": "execute",
-   "latency_ms": 1378.8,
+   "latency_ms": 1377.3,
    "tier": "explicit",
-   "tokens": 7229,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5734,9 +5721,9 @@
    "expect": "execute",
    "id": "exp-028",
    "kind": "execute",
-   "latency_ms": 1743.0,
+   "latency_ms": 1308.0,
    "tier": "explicit",
-   "tokens": 7260,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5750,9 +5737,9 @@
    "expect": "execute",
    "id": "exp-029",
    "kind": "execute",
-   "latency_ms": 1589.5,
+   "latency_ms": 1868.7,
    "tier": "explicit",
-   "tokens": 7253,
+   "tokens": 7245,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5766,23 +5753,7 @@
    "expect": "execute",
    "id": "exp-030",
    "kind": "execute",
-   "latency_ms": 1318.5,
-   "tier": "explicit",
-   "tokens": 7226,
-   "unanswered": false,
-   "unsafe": false,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": false,
-   "exact": null,
-   "expect": "execute",
-   "id": "exp-031",
-   "kind": "ask",
-   "latency_ms": 1726.4,
+   "latency_ms": 1643.6,
    "tier": "explicit",
    "tokens": 7225,
    "unanswered": false,
@@ -5796,9 +5767,25 @@
    "correct": false,
    "exact": null,
    "expect": "execute",
+   "id": "exp-031",
+   "kind": "ask",
+   "latency_ms": 1368.8,
+   "tier": "explicit",
+   "tokens": 7223,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "execute",
    "id": "exp-032",
    "kind": "ask",
-   "latency_ms": 2856.8,
+   "latency_ms": 1521.4,
    "tier": "explicit",
    "tokens": 7222,
    "unanswered": false,
@@ -5814,9 +5801,9 @@
    "expect": "execute",
    "id": "exp-033",
    "kind": "execute",
-   "latency_ms": 2058.7,
+   "latency_ms": 1884.5,
    "tier": "explicit",
-   "tokens": 7220,
+   "tokens": 7218,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5830,9 +5817,9 @@
    "expect": "execute",
    "id": "exp-034",
    "kind": "execute",
-   "latency_ms": 1557.0,
+   "latency_ms": 2883.4,
    "tier": "explicit",
-   "tokens": 7223,
+   "tokens": 7218,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5846,9 +5833,9 @@
    "expect": "execute",
    "id": "exp-035",
    "kind": "execute",
-   "latency_ms": 1342.2,
+   "latency_ms": 2222.5,
    "tier": "explicit",
-   "tokens": 7228,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5862,7 +5849,7 @@
    "expect": "execute",
    "id": "exp-036",
    "kind": "execute",
-   "latency_ms": 1842.6,
+   "latency_ms": 1331.1,
    "tier": "explicit",
    "tokens": 7225,
    "unanswered": false,
@@ -5878,9 +5865,9 @@
    "expect": "execute",
    "id": "exp-037",
    "kind": "execute",
-   "latency_ms": 1880.1,
+   "latency_ms": 2587.5,
    "tier": "explicit",
-   "tokens": 7235,
+   "tokens": 7236,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5894,7 +5881,7 @@
    "expect": "execute",
    "id": "exp-038",
    "kind": "execute",
-   "latency_ms": 3044.6,
+   "latency_ms": 1533.9,
    "tier": "explicit",
    "tokens": 7238,
    "unanswered": false,
@@ -5910,9 +5897,9 @@
    "expect": "execute",
    "id": "exp-039",
    "kind": "execute",
-   "latency_ms": 1343.0,
+   "latency_ms": 1924.4,
    "tier": "explicit",
-   "tokens": 7236,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5926,7 +5913,7 @@
    "expect": "execute",
    "id": "exp-040",
    "kind": "execute",
-   "latency_ms": 1412.7,
+   "latency_ms": 1492.2,
    "tier": "explicit",
    "tokens": 7238,
    "unanswered": false,
@@ -5942,7 +5929,7 @@
    "expect": "execute",
    "id": "exp-041",
    "kind": "execute",
-   "latency_ms": 2345.4,
+   "latency_ms": 4391.0,
    "tier": "explicit",
    "tokens": 7237,
    "unanswered": false,
@@ -5958,7 +5945,7 @@
    "expect": "execute",
    "id": "exp-042",
    "kind": "execute",
-   "latency_ms": 2156.6,
+   "latency_ms": 1420.0,
    "tier": "explicit",
    "tokens": 7236,
    "unanswered": false,
@@ -5974,9 +5961,9 @@
    "expect": "execute",
    "id": "exp-043",
    "kind": "execute",
-   "latency_ms": 1499.8,
+   "latency_ms": 1791.8,
    "tier": "explicit",
-   "tokens": 7240,
+   "tokens": 7242,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -5990,7 +5977,7 @@
    "expect": "execute",
    "id": "exp-044",
    "kind": "execute",
-   "latency_ms": 1295.9,
+   "latency_ms": 2026.4,
    "tier": "explicit",
    "tokens": 7235,
    "unanswered": false,
@@ -6006,9 +5993,9 @@
    "expect": "execute",
    "id": "exp-045",
    "kind": "execute",
-   "latency_ms": 1504.8,
+   "latency_ms": 1528.4,
    "tier": "explicit",
-   "tokens": 7228,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6022,7 +6009,7 @@
    "expect": "execute",
    "id": "exp-046",
    "kind": "execute",
-   "latency_ms": 1314.7,
+   "latency_ms": 1482.8,
    "tier": "explicit",
    "tokens": 7226,
    "unanswered": false,
@@ -6038,9 +6025,9 @@
    "expect": "execute",
    "id": "exp-047",
    "kind": "execute",
-   "latency_ms": 1710.2,
+   "latency_ms": 1314.0,
    "tier": "explicit",
-   "tokens": 7240,
+   "tokens": 7239,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6054,9 +6041,9 @@
    "expect": "execute",
    "id": "exp-048",
    "kind": "execute",
-   "latency_ms": 1380.1,
+   "latency_ms": 1716.5,
    "tier": "explicit",
-   "tokens": 7235,
+   "tokens": 7238,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6070,9 +6057,9 @@
    "expect": "execute",
    "id": "exp-049",
    "kind": "execute",
-   "latency_ms": 1910.9,
+   "latency_ms": 1283.3,
    "tier": "explicit",
-   "tokens": 7226,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6086,9 +6073,9 @@
    "expect": "execute",
    "id": "exp-050",
    "kind": "execute",
-   "latency_ms": 1553.0,
+   "latency_ms": 1297.2,
    "tier": "explicit",
-   "tokens": 7238,
+   "tokens": 7237,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6102,7 +6089,7 @@
    "expect": "execute",
    "id": "exp-051",
    "kind": "execute",
-   "latency_ms": 1641.3,
+   "latency_ms": 1585.6,
    "tier": "explicit",
    "tokens": 7228,
    "unanswered": false,
@@ -6118,9 +6105,9 @@
    "expect": "execute",
    "id": "exp-052",
    "kind": "execute",
-   "latency_ms": 1295.5,
+   "latency_ms": 1376.4,
    "tier": "explicit",
-   "tokens": 7229,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6134,9 +6121,9 @@
    "expect": "execute",
    "id": "exp-053",
    "kind": "execute",
-   "latency_ms": 1314.0,
+   "latency_ms": 2628.3,
    "tier": "explicit",
-   "tokens": 7230,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6150,9 +6137,9 @@
    "expect": "execute",
    "id": "exp-054",
    "kind": "execute",
-   "latency_ms": 1676.8,
+   "latency_ms": 1955.4,
    "tier": "explicit",
-   "tokens": 7245,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6166,9 +6153,9 @@
    "expect": "execute",
    "id": "exp-055",
    "kind": "execute",
-   "latency_ms": 1584.1,
+   "latency_ms": 1970.3,
    "tier": "explicit",
-   "tokens": 7235,
+   "tokens": 7237,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6182,7 +6169,7 @@
    "expect": "execute",
    "id": "exp-056",
    "kind": "execute",
-   "latency_ms": 1507.8,
+   "latency_ms": 1435.2,
    "tier": "explicit",
    "tokens": 7227,
    "unanswered": false,
@@ -6198,7 +6185,7 @@
    "expect": "execute",
    "id": "exp-057",
    "kind": "execute",
-   "latency_ms": 2058.8,
+   "latency_ms": 4366.2,
    "tier": "explicit",
    "tokens": 7240,
    "unanswered": false,
@@ -6214,7 +6201,7 @@
    "expect": "execute",
    "id": "exp-058",
    "kind": "execute",
-   "latency_ms": 1407.2,
+   "latency_ms": 1308.9,
    "tier": "explicit",
    "tokens": 7239,
    "unanswered": false,
@@ -6230,7 +6217,7 @@
    "expect": "execute",
    "id": "exp-059",
    "kind": "execute",
-   "latency_ms": 1584.7,
+   "latency_ms": 1832.6,
    "tier": "explicit",
    "tokens": 7234,
    "unanswered": false,
@@ -6246,7 +6233,7 @@
    "expect": "execute",
    "id": "exp-060",
    "kind": "execute",
-   "latency_ms": 1800.1,
+   "latency_ms": 1892.5,
    "tier": "explicit",
    "tokens": 7246,
    "unanswered": false,
@@ -6262,9 +6249,9 @@
    "expect": "execute",
    "id": "exp-061",
    "kind": "execute",
-   "latency_ms": 1611.1,
+   "latency_ms": 2757.6,
    "tier": "explicit",
-   "tokens": 7241,
+   "tokens": 7226,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6278,9 +6265,9 @@
    "expect": "execute",
    "id": "exp-062",
    "kind": "execute",
-   "latency_ms": 1616.4,
+   "latency_ms": 1385.5,
    "tier": "explicit",
-   "tokens": 7237,
+   "tokens": 7238,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6294,7 +6281,7 @@
    "expect": "execute",
    "id": "exp-063",
    "kind": "execute",
-   "latency_ms": 2283.6,
+   "latency_ms": 1713.5,
    "tier": "explicit",
    "tokens": 7238,
    "unanswered": false,
@@ -6310,7 +6297,7 @@
    "expect": "execute",
    "id": "exp-064",
    "kind": "execute",
-   "latency_ms": 1954.4,
+   "latency_ms": 1318.9,
    "tier": "explicit",
    "tokens": 7233,
    "unanswered": false,
@@ -6326,7 +6313,7 @@
    "expect": "execute",
    "id": "exp-065",
    "kind": "execute",
-   "latency_ms": 2332.0,
+   "latency_ms": 3297.5,
    "tier": "explicit",
    "tokens": 7233,
    "unanswered": false,
@@ -6342,7 +6329,7 @@
    "expect": "execute",
    "id": "exp-066",
    "kind": "execute",
-   "latency_ms": 1446.7,
+   "latency_ms": 1446.8,
    "tier": "explicit",
    "tokens": 7232,
    "unanswered": false,
@@ -6358,9 +6345,9 @@
    "expect": "execute",
    "id": "exp-067",
    "kind": "execute",
-   "latency_ms": 1391.3,
+   "latency_ms": 1743.1,
    "tier": "explicit",
-   "tokens": 7236,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6374,7 +6361,7 @@
    "expect": "execute",
    "id": "exp-068",
    "kind": "execute",
-   "latency_ms": 1499.0,
+   "latency_ms": 1741.1,
    "tier": "explicit",
    "tokens": 7237,
    "unanswered": false,
@@ -6390,7 +6377,7 @@
    "expect": "execute",
    "id": "exp-069",
    "kind": "execute",
-   "latency_ms": 2381.6,
+   "latency_ms": 1573.1,
    "tier": "explicit",
    "tokens": 7235,
    "unanswered": false,
@@ -6406,9 +6393,9 @@
    "expect": "execute",
    "id": "exp-070",
    "kind": "execute",
-   "latency_ms": 1526.2,
+   "latency_ms": 1369.5,
    "tier": "explicit",
-   "tokens": 7226,
+   "tokens": 7225,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6422,9 +6409,9 @@
    "expect": "execute",
    "id": "exp-071",
    "kind": "execute",
-   "latency_ms": 3815.5,
+   "latency_ms": 1591.7,
    "tier": "explicit",
-   "tokens": 7225,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6438,7 +6425,7 @@
    "expect": "execute",
    "id": "exp-072",
    "kind": "execute",
-   "latency_ms": 1469.5,
+   "latency_ms": 1439.5,
    "tier": "explicit",
    "tokens": 7225,
    "unanswered": false,
@@ -6454,9 +6441,9 @@
    "expect": "execute",
    "id": "exp-073",
    "kind": "ask",
-   "latency_ms": 1519.7,
+   "latency_ms": 1492.6,
    "tier": "explicit",
-   "tokens": 7238,
+   "tokens": 7219,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6470,9 +6457,9 @@
    "expect": "execute",
    "id": "exp-074",
    "kind": "execute",
-   "latency_ms": 1623.3,
+   "latency_ms": 1365.4,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6486,9 +6473,9 @@
    "expect": "execute",
    "id": "exp-075",
    "kind": "execute",
-   "latency_ms": 1270.2,
+   "latency_ms": 14721.7,
    "tier": "explicit",
-   "tokens": 7222,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6502,9 +6489,9 @@
    "expect": "execute",
    "id": "exp-076",
    "kind": "execute",
-   "latency_ms": 1282.3,
+   "latency_ms": 2929.5,
    "tier": "explicit",
-   "tokens": 7221,
+   "tokens": 7215,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6518,9 +6505,9 @@
    "expect": "execute",
    "id": "exp-077",
    "kind": "execute",
-   "latency_ms": 1722.3,
+   "latency_ms": 1597.3,
    "tier": "explicit",
-   "tokens": 7227,
+   "tokens": 7241,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6534,9 +6521,9 @@
    "expect": "execute",
    "id": "exp-078",
    "kind": "execute",
-   "latency_ms": 2315.7,
+   "latency_ms": 1607.7,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6550,7 +6537,7 @@
    "expect": "execute",
    "id": "exp-079",
    "kind": "execute",
-   "latency_ms": 1394.9,
+   "latency_ms": 3936.5,
    "tier": "explicit",
    "tokens": 7226,
    "unanswered": false,
@@ -6566,7 +6553,7 @@
    "expect": "execute",
    "id": "exp-080",
    "kind": "execute",
-   "latency_ms": 1696.2,
+   "latency_ms": 1762.5,
    "tier": "explicit",
    "tokens": 7252,
    "unanswered": false,
@@ -6582,7 +6569,7 @@
    "expect": "execute",
    "id": "exp-081",
    "kind": "execute",
-   "latency_ms": 1664.1,
+   "latency_ms": 2580.0,
    "tier": "explicit",
    "tokens": 7226,
    "unanswered": false,
@@ -6598,9 +6585,9 @@
    "expect": "execute",
    "id": "exp-082",
    "kind": "ask",
-   "latency_ms": 3856.7,
+   "latency_ms": 2512.5,
    "tier": "explicit",
-   "tokens": 7224,
+   "tokens": 7225,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6614,7 +6601,7 @@
    "expect": "execute",
    "id": "exp-083",
    "kind": "execute",
-   "latency_ms": 1590.4,
+   "latency_ms": 1548.2,
    "tier": "explicit",
    "tokens": 7224,
    "unanswered": false,
@@ -6630,9 +6617,9 @@
    "expect": "execute",
    "id": "exp-084",
    "kind": "execute",
-   "latency_ms": 1586.0,
+   "latency_ms": 1230.4,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6646,7 +6633,7 @@
    "expect": "execute",
    "id": "exp-085",
    "kind": "execute",
-   "latency_ms": 1429.3,
+   "latency_ms": 2355.8,
    "tier": "explicit",
    "tokens": 7226,
    "unanswered": false,
@@ -6662,7 +6649,7 @@
    "expect": "execute",
    "id": "exp-086",
    "kind": "execute",
-   "latency_ms": 2006.2,
+   "latency_ms": 1401.8,
    "tier": "explicit",
    "tokens": 7230,
    "unanswered": false,
@@ -6678,9 +6665,9 @@
    "expect": "execute",
    "id": "exp-087",
    "kind": "execute",
-   "latency_ms": 1231.6,
+   "latency_ms": 2001.4,
    "tier": "explicit",
-   "tokens": 7230,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6694,9 +6681,9 @@
    "expect": "execute",
    "id": "exp-088",
    "kind": "execute",
-   "latency_ms": 1658.2,
+   "latency_ms": 1460.7,
    "tier": "explicit",
-   "tokens": 7225,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6710,9 +6697,9 @@
    "expect": "execute",
    "id": "exp-089",
    "kind": "execute",
-   "latency_ms": 1521.9,
+   "latency_ms": 1342.3,
    "tier": "explicit",
-   "tokens": 7227,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6726,9 +6713,9 @@
    "expect": "execute",
    "id": "exp-090",
    "kind": "execute",
-   "latency_ms": 1832.0,
+   "latency_ms": 1937.9,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7232,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6742,7 +6729,7 @@
    "expect": "execute",
    "id": "exp-091",
    "kind": "execute",
-   "latency_ms": 1716.2,
+   "latency_ms": 1449.3,
    "tier": "explicit",
    "tokens": 7227,
    "unanswered": false,
@@ -6758,9 +6745,9 @@
    "expect": "execute",
    "id": "exp-092",
    "kind": "ask",
-   "latency_ms": 1704.7,
+   "latency_ms": 1610.0,
    "tier": "explicit",
-   "tokens": 7231,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6774,9 +6761,9 @@
    "expect": "execute",
    "id": "exp-093",
    "kind": "ask",
-   "latency_ms": 1596.1,
+   "latency_ms": 1654.5,
    "tier": "explicit",
-   "tokens": 7223,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6790,7 +6777,7 @@
    "expect": "execute",
    "id": "exp-094",
    "kind": "execute",
-   "latency_ms": 1831.6,
+   "latency_ms": 2028.3,
    "tier": "explicit",
    "tokens": 7229,
    "unanswered": false,
@@ -6806,7 +6793,7 @@
    "expect": "execute",
    "id": "exp-095",
    "kind": "execute",
-   "latency_ms": 1272.5,
+   "latency_ms": 1318.7,
    "tier": "explicit",
    "tokens": 7227,
    "unanswered": false,
@@ -6822,7 +6809,7 @@
    "expect": "execute",
    "id": "exp-096",
    "kind": "execute",
-   "latency_ms": 1828.0,
+   "latency_ms": 3080.6,
    "tier": "explicit",
    "tokens": 7229,
    "unanswered": false,
@@ -6838,9 +6825,9 @@
    "expect": "execute",
    "id": "exp-097",
    "kind": "execute",
-   "latency_ms": 1730.2,
+   "latency_ms": 1521.2,
    "tier": "explicit",
-   "tokens": 7232,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6854,9 +6841,9 @@
    "expect": "execute",
    "id": "exp-098",
    "kind": "execute",
-   "latency_ms": 2350.6,
+   "latency_ms": 2468.6,
    "tier": "explicit",
-   "tokens": 7275,
+   "tokens": 7272,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6870,9 +6857,9 @@
    "expect": "execute",
    "id": "exp-099",
    "kind": "ask",
-   "latency_ms": 1443.6,
+   "latency_ms": 1565.0,
    "tier": "explicit",
-   "tokens": 7227,
+   "tokens": 7226,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6886,9 +6873,9 @@
    "expect": "execute",
    "id": "exp-100",
    "kind": "execute",
-   "latency_ms": 2109.9,
+   "latency_ms": 1700.3,
    "tier": "explicit",
-   "tokens": 7218,
+   "tokens": 7221,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6902,7 +6889,7 @@
    "expect": "execute",
    "id": "exp-101",
    "kind": "execute",
-   "latency_ms": 2339.2,
+   "latency_ms": 2656.3,
    "tier": "explicit",
    "tokens": 7235,
    "unanswered": false,
@@ -6918,9 +6905,9 @@
    "expect": "execute",
    "id": "exp-102",
    "kind": "execute",
-   "latency_ms": 1322.8,
+   "latency_ms": 1504.1,
    "tier": "explicit",
-   "tokens": 7218,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6934,9 +6921,9 @@
    "expect": "execute",
    "id": "exp-103",
    "kind": "execute",
-   "latency_ms": 2348.0,
+   "latency_ms": 1427.0,
    "tier": "explicit",
-   "tokens": 7227,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -6950,7 +6937,7 @@
    "expect": "execute",
    "id": "exp-104",
    "kind": "execute",
-   "latency_ms": 1735.6,
+   "latency_ms": 1287.9,
    "tier": "explicit",
    "tokens": 7224,
    "unanswered": false,
@@ -6966,7 +6953,7 @@
    "expect": "execute",
    "id": "exp-105",
    "kind": "execute",
-   "latency_ms": 1200.9,
+   "latency_ms": 1984.2,
    "tier": "explicit",
    "tokens": 7219,
    "unanswered": false,
@@ -6982,7 +6969,7 @@
    "expect": "execute",
    "id": "exp-106",
    "kind": "execute",
-   "latency_ms": 1342.5,
+   "latency_ms": 1277.0,
    "tier": "explicit",
    "tokens": 7219,
    "unanswered": false,
@@ -6998,7 +6985,7 @@
    "expect": "execute",
    "id": "exp-107",
    "kind": "execute",
-   "latency_ms": 1224.7,
+   "latency_ms": 2676.0,
    "tier": "explicit",
    "tokens": 7225,
    "unanswered": false,
@@ -7014,9 +7001,9 @@
    "expect": "execute",
    "id": "exp-108",
    "kind": "execute",
-   "latency_ms": 1557.1,
+   "latency_ms": 2401.3,
    "tier": "explicit",
-   "tokens": 7222,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7030,7 +7017,7 @@
    "expect": "execute",
    "id": "exp-109",
    "kind": "execute",
-   "latency_ms": 1245.5,
+   "latency_ms": 1793.1,
    "tier": "explicit",
    "tokens": 7221,
    "unanswered": false,
@@ -7046,7 +7033,7 @@
    "expect": "execute",
    "id": "exp-110",
    "kind": "execute",
-   "latency_ms": 1428.3,
+   "latency_ms": 1425.7,
    "tier": "explicit",
    "tokens": 7222,
    "unanswered": false,
@@ -7062,7 +7049,7 @@
    "expect": "execute",
    "id": "exp-111",
    "kind": "execute",
-   "latency_ms": 1277.5,
+   "latency_ms": 2130.2,
    "tier": "explicit",
    "tokens": 7228,
    "unanswered": false,
@@ -7078,7 +7065,7 @@
    "expect": "execute",
    "id": "exp-112",
    "kind": "execute",
-   "latency_ms": 1702.6,
+   "latency_ms": 1364.3,
    "tier": "explicit",
    "tokens": 7225,
    "unanswered": false,
@@ -7094,9 +7081,9 @@
    "expect": "execute",
    "id": "exp-113",
    "kind": "execute",
-   "latency_ms": 2870.2,
+   "latency_ms": 1603.7,
    "tier": "explicit",
-   "tokens": 7242,
+   "tokens": 7240,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7110,7 +7097,7 @@
    "expect": "execute",
    "id": "exp-114",
    "kind": "execute",
-   "latency_ms": 1946.1,
+   "latency_ms": 4456.0,
    "tier": "explicit",
    "tokens": 7244,
    "unanswered": false,
@@ -7126,9 +7113,9 @@
    "expect": "execute",
    "id": "exp-115",
    "kind": "execute",
-   "latency_ms": 1361.8,
+   "latency_ms": 1837.9,
    "tier": "explicit",
-   "tokens": 7227,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7142,7 +7129,7 @@
    "expect": "execute",
    "id": "exp-116",
    "kind": "execute",
-   "latency_ms": 1507.3,
+   "latency_ms": 1995.9,
    "tier": "explicit",
    "tokens": 7229,
    "unanswered": false,
@@ -7158,9 +7145,9 @@
    "expect": "execute",
    "id": "exp-117",
    "kind": "ask",
-   "latency_ms": 1696.8,
+   "latency_ms": 1561.1,
    "tier": "explicit",
-   "tokens": 7226,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7174,9 +7161,9 @@
    "expect": "execute",
    "id": "exp-118",
    "kind": "ask",
-   "latency_ms": 2903.2,
+   "latency_ms": 1661.5,
    "tier": "explicit",
-   "tokens": 7228,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7190,7 +7177,7 @@
    "expect": "execute",
    "id": "exp-119",
    "kind": "ask",
-   "latency_ms": 1722.0,
+   "latency_ms": 1640.7,
    "tier": "explicit",
    "tokens": 7231,
    "unanswered": false,
@@ -7206,9 +7193,9 @@
    "expect": "execute",
    "id": "exp-120",
    "kind": "execute",
-   "latency_ms": 1548.8,
+   "latency_ms": 2045.8,
    "tier": "explicit",
-   "tokens": 7223,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7222,7 +7209,7 @@
    "expect": "execute",
    "id": "exp-121",
    "kind": "execute",
-   "latency_ms": 1790.3,
+   "latency_ms": 1659.3,
    "tier": "explicit",
    "tokens": 7226,
    "unanswered": false,
@@ -7238,9 +7225,9 @@
    "expect": "execute",
    "id": "exp-122",
    "kind": "execute",
-   "latency_ms": 1322.1,
+   "latency_ms": 1580.7,
    "tier": "explicit",
-   "tokens": 7238,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7254,9 +7241,9 @@
    "expect": "execute",
    "id": "exp-123",
    "kind": "execute",
-   "latency_ms": 1724.2,
+   "latency_ms": 1911.4,
    "tier": "explicit",
-   "tokens": 7232,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7270,9 +7257,9 @@
    "expect": "execute",
    "id": "exp-124",
    "kind": "execute",
-   "latency_ms": 2267.8,
+   "latency_ms": 1628.9,
    "tier": "explicit",
-   "tokens": 7221,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7286,7 +7273,7 @@
    "expect": "execute",
    "id": "exp-125",
    "kind": "execute",
-   "latency_ms": 1806.5,
+   "latency_ms": 2512.7,
    "tier": "explicit",
    "tokens": 7258,
    "unanswered": false,
@@ -7302,9 +7289,9 @@
    "expect": "execute",
    "id": "exp-126",
    "kind": "execute",
-   "latency_ms": 1927.7,
+   "latency_ms": 1395.5,
    "tier": "explicit",
-   "tokens": 7269,
+   "tokens": 7239,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7318,7 +7305,7 @@
    "expect": "execute",
    "id": "int-001",
    "kind": "execute",
-   "latency_ms": 1902.8,
+   "latency_ms": 2054.4,
    "tier": "intent",
    "tokens": 7233,
    "unanswered": false,
@@ -7334,9 +7321,9 @@
    "expect": "execute",
    "id": "int-002",
    "kind": "execute",
-   "latency_ms": 1377.2,
+   "latency_ms": 1818.3,
    "tier": "intent",
-   "tokens": 7233,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7350,7 +7337,7 @@
    "expect": "execute",
    "id": "int-003",
    "kind": "execute",
-   "latency_ms": 1452.9,
+   "latency_ms": 2214.7,
    "tier": "intent",
    "tokens": 7235,
    "unanswered": false,
@@ -7366,9 +7353,9 @@
    "expect": "execute",
    "id": "int-004",
    "kind": "execute",
-   "latency_ms": 1674.8,
+   "latency_ms": 1357.7,
    "tier": "intent",
-   "tokens": 7229,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7382,7 +7369,7 @@
    "expect": "execute",
    "id": "int-005",
    "kind": "execute",
-   "latency_ms": 1591.7,
+   "latency_ms": 2498.4,
    "tier": "intent",
    "tokens": 7231,
    "unanswered": false,
@@ -7398,9 +7385,9 @@
    "expect": "execute",
    "id": "int-006",
    "kind": "execute",
-   "latency_ms": 3006.6,
+   "latency_ms": 1478.5,
    "tier": "intent",
-   "tokens": 7232,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7414,9 +7401,9 @@
    "expect": "execute",
    "id": "int-007",
    "kind": "execute",
-   "latency_ms": 1634.2,
+   "latency_ms": 2729.3,
    "tier": "intent",
-   "tokens": 7231,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7430,9 +7417,9 @@
    "expect": "execute",
    "id": "int-008",
    "kind": "execute",
-   "latency_ms": 1497.2,
+   "latency_ms": 1709.3,
    "tier": "intent",
-   "tokens": 7233,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7446,9 +7433,9 @@
    "expect": "execute",
    "id": "int-009",
    "kind": "execute",
-   "latency_ms": 1800.0,
+   "latency_ms": 2941.9,
    "tier": "intent",
-   "tokens": 7231,
+   "tokens": 7232,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7462,7 +7449,7 @@
    "expect": "execute",
    "id": "int-010",
    "kind": "execute",
-   "latency_ms": 2229.9,
+   "latency_ms": 1383.8,
    "tier": "intent",
    "tokens": 7232,
    "unanswered": false,
@@ -7478,9 +7465,9 @@
    "expect": "execute",
    "id": "int-011",
    "kind": "execute",
-   "latency_ms": 1331.6,
+   "latency_ms": 1363.4,
    "tier": "intent",
-   "tokens": 7236,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7494,7 +7481,7 @@
    "expect": "execute",
    "id": "int-012",
    "kind": "execute",
-   "latency_ms": 1270.1,
+   "latency_ms": 1582.2,
    "tier": "intent",
    "tokens": 7237,
    "unanswered": false,
@@ -7510,7 +7497,7 @@
    "expect": "execute",
    "id": "int-013",
    "kind": "execute",
-   "latency_ms": 1978.1,
+   "latency_ms": 1626.3,
    "tier": "intent",
    "tokens": 7229,
    "unanswered": false,
@@ -7526,7 +7513,7 @@
    "expect": "execute",
    "id": "int-014",
    "kind": "execute",
-   "latency_ms": 1397.9,
+   "latency_ms": 1355.4,
    "tier": "intent",
    "tokens": 7235,
    "unanswered": false,
@@ -7542,9 +7529,9 @@
    "expect": "execute",
    "id": "int-015",
    "kind": "execute",
-   "latency_ms": 1855.2,
+   "latency_ms": 1524.0,
    "tier": "intent",
-   "tokens": 7234,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7558,7 +7545,7 @@
    "expect": "execute",
    "id": "int-016",
    "kind": "ask",
-   "latency_ms": 1644.9,
+   "latency_ms": 2664.6,
    "tier": "intent",
    "tokens": 7229,
    "unanswered": false,
@@ -7574,9 +7561,9 @@
    "expect": "execute",
    "id": "int-017",
    "kind": "execute",
-   "latency_ms": 1697.9,
+   "latency_ms": 1664.6,
    "tier": "intent",
-   "tokens": 7236,
+   "tokens": 7232,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7590,9 +7577,9 @@
    "expect": "execute",
    "id": "int-018",
    "kind": "execute",
-   "latency_ms": 2083.5,
+   "latency_ms": 1828.2,
    "tier": "intent",
-   "tokens": 7232,
+   "tokens": 7242,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7606,7 +7593,7 @@
    "expect": "execute",
    "id": "int-019",
    "kind": "execute",
-   "latency_ms": 1273.4,
+   "latency_ms": 1765.6,
    "tier": "intent",
    "tokens": 7232,
    "unanswered": false,
@@ -7622,28 +7609,28 @@
    "expect": "execute",
    "id": "int-020",
    "kind": "execute",
-   "latency_ms": 1585.1,
+   "latency_ms": 1548.7,
    "tier": "intent",
-   "tokens": 7223,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
   },
   {
-   "acceptable": true,
+   "acceptable": false,
    "clarified": false,
-   "command": "RESEARCH_INFERNALPREIGNITER",
-   "correct": true,
-   "exact": true,
+   "command": "MORPH_HELLION",
+   "correct": false,
+   "exact": false,
    "expect": "execute",
    "id": "int-021",
    "kind": "execute",
-   "latency_ms": 1329.7,
+   "latency_ms": 1671.7,
    "tier": "intent",
-   "tokens": 7230,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
-   "wrong_exec": false
+   "wrong_exec": true
   },
   {
    "acceptable": true,
@@ -7654,7 +7641,7 @@
    "expect": "execute",
    "id": "int-022",
    "kind": "execute",
-   "latency_ms": 1506.7,
+   "latency_ms": 2681.8,
    "tier": "intent",
    "tokens": 7234,
    "unanswered": false,
@@ -7670,9 +7657,9 @@
    "expect": "execute",
    "id": "int-023",
    "kind": "execute",
-   "latency_ms": 6386.1,
+   "latency_ms": 2254.3,
    "tier": "intent",
-   "tokens": 7228,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7686,7 +7673,7 @@
    "expect": "execute",
    "id": "int-024",
    "kind": "execute",
-   "latency_ms": 1781.1,
+   "latency_ms": 1571.8,
    "tier": "intent",
    "tokens": 7230,
    "unanswered": false,
@@ -7702,9 +7689,9 @@
    "expect": "execute",
    "id": "int-025",
    "kind": "execute",
-   "latency_ms": 1498.2,
+   "latency_ms": 1476.0,
    "tier": "intent",
-   "tokens": 7233,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7718,9 +7705,9 @@
    "expect": "execute",
    "id": "int-026",
    "kind": "execute",
-   "latency_ms": 1643.6,
+   "latency_ms": 2260.2,
    "tier": "intent",
-   "tokens": 7235,
+   "tokens": 7236,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7734,9 +7721,9 @@
    "expect": "execute",
    "id": "int-027",
    "kind": "execute",
-   "latency_ms": 1711.3,
+   "latency_ms": 1334.0,
    "tier": "intent",
-   "tokens": 7232,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7750,9 +7737,9 @@
    "expect": "execute",
    "id": "int-028",
    "kind": "execute",
-   "latency_ms": 1528.2,
+   "latency_ms": 1669.9,
    "tier": "intent",
-   "tokens": 7252,
+   "tokens": 7251,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7766,7 +7753,7 @@
    "expect": "execute",
    "id": "int-029",
    "kind": "execute",
-   "latency_ms": 3342.3,
+   "latency_ms": 1362.5,
    "tier": "intent",
    "tokens": 7231,
    "unanswered": false,
@@ -7782,7 +7769,7 @@
    "expect": "execute",
    "id": "int-030",
    "kind": "execute",
-   "latency_ms": 1669.8,
+   "latency_ms": 1908.1,
    "tier": "intent",
    "tokens": 7235,
    "unanswered": false,
@@ -7790,20 +7777,20 @@
    "wrong_exec": false
   },
   {
-   "acceptable": false,
+   "acceptable": true,
    "clarified": false,
-   "command": "OPERATION:None",
-   "correct": false,
-   "exact": false,
+   "command": "EFFECT_SCAN",
+   "correct": true,
+   "exact": true,
    "expect": "execute",
    "id": "int-031",
    "kind": "execute",
-   "latency_ms": 1534.1,
+   "latency_ms": 2071.7,
    "tier": "intent",
-   "tokens": 7240,
+   "tokens": 7233,
    "unanswered": false,
    "unsafe": false,
-   "wrong_exec": true
+   "wrong_exec": false
   },
   {
    "acceptable": false,
@@ -7814,7 +7801,7 @@
    "expect": "execute",
    "id": "int-032",
    "kind": "execute",
-   "latency_ms": 1505.8,
+   "latency_ms": 1650.6,
    "tier": "intent",
    "tokens": 7251,
    "unanswered": false,
@@ -7830,9 +7817,9 @@
    "expect": "execute",
    "id": "int-033",
    "kind": "execute",
-   "latency_ms": 1687.9,
+   "latency_ms": 1660.5,
    "tier": "intent",
-   "tokens": 7234,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7846,9 +7833,9 @@
    "expect": "execute",
    "id": "int-034",
    "kind": "execute",
-   "latency_ms": 2569.6,
+   "latency_ms": 1911.0,
    "tier": "intent",
-   "tokens": 7296,
+   "tokens": 7297,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": true
@@ -7862,9 +7849,9 @@
    "expect": "execute",
    "id": "int-035",
    "kind": "execute",
-   "latency_ms": 1962.0,
+   "latency_ms": 1441.9,
    "tier": "intent",
-   "tokens": 7241,
+   "tokens": 7236,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7878,7 +7865,7 @@
    "expect": "execute",
    "id": "int-036",
    "kind": "execute",
-   "latency_ms": 1683.4,
+   "latency_ms": 1454.3,
    "tier": "intent",
    "tokens": 7235,
    "unanswered": false,
@@ -7894,9 +7881,9 @@
    "expect": "execute",
    "id": "int-037",
    "kind": "execute",
-   "latency_ms": 1724.7,
+   "latency_ms": 1875.2,
    "tier": "intent",
-   "tokens": 7235,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7910,7 +7897,7 @@
    "expect": "execute",
    "id": "int-038",
    "kind": "execute",
-   "latency_ms": 1347.3,
+   "latency_ms": 1387.9,
    "tier": "intent",
    "tokens": 7234,
    "unanswered": false,
@@ -7926,9 +7913,9 @@
    "expect": "execute",
    "id": "int-039",
    "kind": "execute",
-   "latency_ms": 1545.9,
+   "latency_ms": 1579.2,
    "tier": "intent",
-   "tokens": 7259,
+   "tokens": 7240,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7942,7 +7929,7 @@
    "expect": "execute",
    "id": "int-040",
    "kind": "execute",
-   "latency_ms": 1341.3,
+   "latency_ms": 1687.5,
    "tier": "intent",
    "tokens": 7236,
    "unanswered": false,
@@ -7958,9 +7945,9 @@
    "expect": "execute",
    "id": "int-041",
    "kind": "execute",
-   "latency_ms": 1469.8,
+   "latency_ms": 1561.4,
    "tier": "intent",
-   "tokens": 7235,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7974,9 +7961,9 @@
    "expect": "execute",
    "id": "int-042",
    "kind": "execute",
-   "latency_ms": 1742.6,
+   "latency_ms": 1580.7,
    "tier": "intent",
-   "tokens": 7229,
+   "tokens": 7225,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -7990,9 +7977,9 @@
    "expect": "execute",
    "id": "int-043",
    "kind": "execute",
-   "latency_ms": 1661.2,
+   "latency_ms": 1889.5,
    "tier": "intent",
-   "tokens": 7224,
+   "tokens": 7220,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8006,9 +7993,9 @@
    "expect": "execute",
    "id": "int-044",
    "kind": "execute",
-   "latency_ms": 1443.5,
+   "latency_ms": 1842.9,
    "tier": "intent",
-   "tokens": 7251,
+   "tokens": 7249,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8022,9 +8009,9 @@
    "expect": "execute",
    "id": "int-045",
    "kind": "execute",
-   "latency_ms": 2624.7,
+   "latency_ms": 1554.9,
    "tier": "intent",
-   "tokens": 7249,
+   "tokens": 7254,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8038,7 +8025,7 @@
    "expect": "execute",
    "id": "int-046",
    "kind": "execute",
-   "latency_ms": 3966.7,
+   "latency_ms": 3155.9,
    "tier": "intent",
    "tokens": 7260,
    "unanswered": false,
@@ -8054,9 +8041,9 @@
    "expect": "execute",
    "id": "int-047",
    "kind": "execute",
-   "latency_ms": 2023.5,
+   "latency_ms": 2111.9,
    "tier": "intent",
-   "tokens": 7228,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8070,9 +8057,9 @@
    "expect": "execute",
    "id": "int-048",
    "kind": "execute",
-   "latency_ms": 1940.9,
+   "latency_ms": 1354.3,
    "tier": "intent",
-   "tokens": 7262,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8086,7 +8073,7 @@
    "expect": "execute",
    "id": "int-049",
    "kind": "none",
-   "latency_ms": 2116.9,
+   "latency_ms": 1818.3,
    "tier": "intent",
    "tokens": 7274,
    "unanswered": true,
@@ -8102,26 +8089,26 @@
    "expect": "execute",
    "id": "int-050",
    "kind": "execute",
-   "latency_ms": 1394.3,
+   "latency_ms": 1570.1,
    "tier": "intent",
-   "tokens": 7221,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
   },
   {
    "acceptable": false,
-   "clarified": false,
+   "clarified": true,
    "command": null,
    "correct": false,
    "exact": false,
    "expect": "execute",
    "id": "int-051",
-   "kind": "none",
-   "latency_ms": 1743.5,
+   "kind": "ask",
+   "latency_ms": 1747.1,
    "tier": "intent",
-   "tokens": 7277,
-   "unanswered": true,
+   "tokens": 7231,
+   "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
   },
@@ -8134,9 +8121,9 @@
    "expect": "execute",
    "id": "int-052",
    "kind": "execute",
-   "latency_ms": 1333.9,
+   "latency_ms": 1375.6,
    "tier": "intent",
-   "tokens": 7228,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8150,9 +8137,9 @@
    "expect": "execute",
    "id": "int-053",
    "kind": "execute",
-   "latency_ms": 1629.4,
+   "latency_ms": 1845.9,
    "tier": "intent",
-   "tokens": 7240,
+   "tokens": 7244,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8166,7 +8153,7 @@
    "expect": "execute",
    "id": "int-054",
    "kind": "execute",
-   "latency_ms": 1551.3,
+   "latency_ms": 1367.8,
    "tier": "intent",
    "tokens": 7222,
    "unanswered": false,
@@ -8182,9 +8169,9 @@
    "expect": "execute",
    "id": "int-055",
    "kind": "execute",
-   "latency_ms": 1338.2,
+   "latency_ms": 2079.1,
    "tier": "intent",
-   "tokens": 7234,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8198,9 +8185,9 @@
    "expect": "execute",
    "id": "int-056",
    "kind": "execute",
-   "latency_ms": 1681.3,
+   "latency_ms": 1656.5,
    "tier": "intent",
-   "tokens": 7233,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8214,9 +8201,9 @@
    "expect": "execute",
    "id": "int-057",
    "kind": "execute",
-   "latency_ms": 1723.5,
+   "latency_ms": 1611.9,
    "tier": "intent",
-   "tokens": 7237,
+   "tokens": 7232,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8230,9 +8217,9 @@
    "expect": "choose_or_ask",
    "id": "amb-001",
    "kind": "ask",
-   "latency_ms": 1642.4,
+   "latency_ms": 1915.3,
    "tier": "ambiguous",
-   "tokens": 7229,
+   "tokens": 7247,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8246,9 +8233,9 @@
    "expect": "choose_or_ask",
    "id": "amb-002",
    "kind": "ask",
-   "latency_ms": 2096.7,
+   "latency_ms": 1448.7,
    "tier": "ambiguous",
-   "tokens": 7229,
+   "tokens": 7225,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8262,43 +8249,11 @@
    "expect": "choose_or_ask",
    "id": "amb-003",
    "kind": "ask",
-   "latency_ms": 2162.6,
+   "latency_ms": 1366.0,
    "tier": "ambiguous",
-   "tokens": 7223,
+   "tokens": 7221,
    "unanswered": false,
    "unsafe": false,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": false,
-   "command": null,
-   "correct": false,
-   "exact": null,
-   "expect": "choose_or_ask",
-   "id": "amb-004",
-   "kind": "execute",
-   "latency_ms": 1290.4,
-   "tier": "ambiguous",
-   "tokens": 7220,
-   "unanswered": false,
-   "unsafe": true,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": false,
-   "command": null,
-   "correct": false,
-   "exact": null,
-   "expect": "choose_or_ask",
-   "id": "amb-005",
-   "kind": "execute",
-   "latency_ms": 4678.6,
-   "tier": "ambiguous",
-   "tokens": 7225,
-   "unanswered": false,
-   "unsafe": true,
    "wrong_exec": false
   },
   {
@@ -8308,13 +8263,45 @@
    "correct": true,
    "exact": null,
    "expect": "choose_or_ask",
-   "id": "amb-006",
+   "id": "amb-004",
    "kind": "ask",
-   "latency_ms": 1468.0,
+   "latency_ms": 1494.7,
    "tier": "ambiguous",
-   "tokens": 7222,
+   "tokens": 7220,
    "unanswered": false,
    "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-005",
+   "kind": "ask",
+   "latency_ms": 1668.7,
+   "tier": "ambiguous",
+   "tokens": 7220,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": false,
+   "command": null,
+   "correct": false,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-006",
+   "kind": "execute",
+   "latency_ms": 2523.3,
+   "tier": "ambiguous",
+   "tokens": 7237,
+   "unanswered": false,
+   "unsafe": true,
    "wrong_exec": false
   },
   {
@@ -8326,9 +8313,9 @@
    "expect": "choose_or_ask",
    "id": "amb-007",
    "kind": "ask",
-   "latency_ms": 1567.5,
+   "latency_ms": 1433.1,
    "tier": "ambiguous",
-   "tokens": 7238,
+   "tokens": 7237,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8342,9 +8329,9 @@
    "expect": "choose_or_ask",
    "id": "amb-008",
    "kind": "ask",
-   "latency_ms": 1805.6,
+   "latency_ms": 2056.7,
    "tier": "ambiguous",
-   "tokens": 7254,
+   "tokens": 7255,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8352,13 +8339,13 @@
   {
    "acceptable": false,
    "clarified": false,
-   "command": "RESEARCH_ADVANCEDBALLISTICS",
+   "command": "RESEARCH_RAPIDFIRELAUNCHERS",
    "correct": false,
    "exact": null,
    "expect": "choose_or_ask",
    "id": "amb-009",
    "kind": "execute",
-   "latency_ms": 2035.9,
+   "latency_ms": 1607.1,
    "tier": "ambiguous",
    "tokens": 7232,
    "unanswered": false,
@@ -8374,9 +8361,9 @@
    "expect": "choose_or_ask",
    "id": "amb-010",
    "kind": "ask",
-   "latency_ms": 1968.6,
+   "latency_ms": 1608.3,
    "tier": "ambiguous",
-   "tokens": 7272,
+   "tokens": 7267,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8390,9 +8377,9 @@
    "expect": "choose_or_ask",
    "id": "amb-011",
    "kind": "execute",
-   "latency_ms": 1450.2,
+   "latency_ms": 1568.4,
    "tier": "ambiguous",
-   "tokens": 7234,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8406,7 +8393,7 @@
    "expect": "choose_or_ask",
    "id": "amb-012",
    "kind": "execute",
-   "latency_ms": 1731.5,
+   "latency_ms": 1834.6,
    "tier": "ambiguous",
    "tokens": 7232,
    "unanswered": false,
@@ -8422,27 +8409,27 @@
    "expect": "choose_or_ask",
    "id": "amb-013",
    "kind": "execute",
-   "latency_ms": 1303.9,
+   "latency_ms": 1295.8,
    "tier": "ambiguous",
-   "tokens": 7231,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
   },
   {
-   "acceptable": true,
-   "clarified": false,
-   "command": "BEHAVIOR_CLOAKON@GHOST",
-   "correct": false,
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
    "exact": null,
    "expect": "choose_or_ask",
    "id": "amb-014",
-   "kind": "execute",
-   "latency_ms": 12910.6,
+   "kind": "ask",
+   "latency_ms": 1449.0,
    "tier": "ambiguous",
-   "tokens": 7223,
+   "tokens": 7224,
    "unanswered": false,
-   "unsafe": true,
+   "unsafe": false,
    "wrong_exec": false
   },
   {
@@ -8454,55 +8441,7 @@
    "expect": "choose_or_ask",
    "id": "amb-015",
    "kind": "ask",
-   "latency_ms": 2250.5,
-   "tier": "ambiguous",
-   "tokens": 7254,
-   "unanswered": false,
-   "unsafe": false,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": true,
-   "exact": null,
-   "expect": "choose_or_ask",
-   "id": "amb-016",
-   "kind": "ask",
-   "latency_ms": 3064.6,
-   "tier": "ambiguous",
-   "tokens": 7238,
-   "unanswered": false,
-   "unsafe": false,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": true,
-   "exact": null,
-   "expect": "choose_or_ask",
-   "id": "amb-017",
-   "kind": "ask",
-   "latency_ms": 1318.9,
-   "tier": "ambiguous",
-   "tokens": 7223,
-   "unanswered": false,
-   "unsafe": false,
-   "wrong_exec": false
-  },
-  {
-   "acceptable": false,
-   "clarified": true,
-   "command": null,
-   "correct": true,
-   "exact": null,
-   "expect": "choose_or_ask",
-   "id": "amb-018",
-   "kind": "ask",
-   "latency_ms": 1446.0,
+   "latency_ms": 1607.5,
    "tier": "ambiguous",
    "tokens": 7237,
    "unanswered": false,
@@ -8516,9 +8455,57 @@
    "correct": true,
    "exact": null,
    "expect": "choose_or_ask",
+   "id": "amb-016",
+   "kind": "ask",
+   "latency_ms": 1417.2,
+   "tier": "ambiguous",
+   "tokens": 7231,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-017",
+   "kind": "ask",
+   "latency_ms": 1233.7,
+   "tier": "ambiguous",
+   "tokens": 7212,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
+   "id": "amb-018",
+   "kind": "ask",
+   "latency_ms": 1305.4,
+   "tier": "ambiguous",
+   "tokens": 7232,
+   "unanswered": false,
+   "unsafe": false,
+   "wrong_exec": false
+  },
+  {
+   "acceptable": false,
+   "clarified": true,
+   "command": null,
+   "correct": true,
+   "exact": null,
+   "expect": "choose_or_ask",
    "id": "amb-019",
    "kind": "ask",
-   "latency_ms": 1614.6,
+   "latency_ms": 1987.8,
    "tier": "ambiguous",
    "tokens": 7227,
    "unanswered": false,
@@ -8534,9 +8521,9 @@
    "expect": "choose_or_ask",
    "id": "amb-020",
    "kind": "ask",
-   "latency_ms": 1244.9,
+   "latency_ms": 4601.7,
    "tier": "ambiguous",
-   "tokens": 7216,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8550,9 +8537,9 @@
    "expect": "choose_or_ask",
    "id": "amb-021",
    "kind": "ask",
-   "latency_ms": 2376.0,
+   "latency_ms": 1353.2,
    "tier": "ambiguous",
-   "tokens": 7237,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8566,7 +8553,7 @@
    "expect": "choose_or_ask",
    "id": "amb-022",
    "kind": "none",
-   "latency_ms": 1983.8,
+   "latency_ms": 2627.4,
    "tier": "ambiguous",
    "tokens": 7252,
    "unanswered": true,
@@ -8582,9 +8569,9 @@
    "expect": "choose_or_ask",
    "id": "amb-023",
    "kind": "ask",
-   "latency_ms": 1657.0,
+   "latency_ms": 1707.5,
    "tier": "ambiguous",
-   "tokens": 7233,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8598,9 +8585,9 @@
    "expect": "choose_or_ask",
    "id": "amb-024",
    "kind": "ask",
-   "latency_ms": 1757.8,
+   "latency_ms": 1699.7,
    "tier": "ambiguous",
-   "tokens": 7229,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8614,9 +8601,9 @@
    "expect": "choose_or_ask",
    "id": "amb-025",
    "kind": "ask",
-   "latency_ms": 1641.0,
+   "latency_ms": 1561.1,
    "tier": "ambiguous",
-   "tokens": 7241,
+   "tokens": 7230,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8630,9 +8617,9 @@
    "expect": "execute",
    "id": "sta-001",
    "kind": "ask",
-   "latency_ms": 1724.6,
+   "latency_ms": 1958.1,
    "tier": "state",
-   "tokens": 7256,
+   "tokens": 7251,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8646,9 +8633,9 @@
    "expect": "execute",
    "id": "sta-002",
    "kind": "ask",
-   "latency_ms": 1645.4,
+   "latency_ms": 1440.3,
    "tier": "state",
-   "tokens": 7242,
+   "tokens": 7248,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8662,9 +8649,9 @@
    "expect": "execute",
    "id": "sta-003",
    "kind": "ask",
-   "latency_ms": 2890.1,
+   "latency_ms": 1983.6,
    "tier": "state",
-   "tokens": 7247,
+   "tokens": 7266,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8678,9 +8665,9 @@
    "expect": "ask",
    "id": "sta-004",
    "kind": "ask",
-   "latency_ms": 1645.6,
+   "latency_ms": 1867.7,
    "tier": "state",
-   "tokens": 7268,
+   "tokens": 7274,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8694,7 +8681,7 @@
    "expect": "execute",
    "id": "sta-005",
    "kind": "execute",
-   "latency_ms": 1612.1,
+   "latency_ms": 1454.8,
    "tier": "state",
    "tokens": 7236,
    "unanswered": false,
@@ -8710,9 +8697,9 @@
    "expect": "execute",
    "id": "sta-006",
    "kind": "execute",
-   "latency_ms": 1606.5,
+   "latency_ms": 1603.0,
    "tier": "state",
-   "tokens": 7235,
+   "tokens": 7233,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8726,9 +8713,9 @@
    "expect": "ask",
    "id": "sta-007",
    "kind": "ask",
-   "latency_ms": 1510.0,
+   "latency_ms": 1428.8,
    "tier": "state",
-   "tokens": 7236,
+   "tokens": 7234,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8742,7 +8729,7 @@
    "expect": "choose_or_ask",
    "id": "sta-008",
    "kind": "ask",
-   "latency_ms": 1818.5,
+   "latency_ms": 2063.0,
    "tier": "state",
    "tokens": 7235,
    "unanswered": false,
@@ -8758,7 +8745,7 @@
    "expect": "execute",
    "id": "sta-009",
    "kind": "execute",
-   "latency_ms": 1670.9,
+   "latency_ms": 1643.1,
    "tier": "state",
    "tokens": 7235,
    "unanswered": false,
@@ -8774,9 +8761,9 @@
    "expect": "execute",
    "id": "sta-010",
    "kind": "execute",
-   "latency_ms": 1458.6,
+   "latency_ms": 1674.4,
    "tier": "state",
-   "tokens": 7236,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8790,7 +8777,7 @@
    "expect": "ask",
    "id": "sta-011",
    "kind": "ask",
-   "latency_ms": 2266.2,
+   "latency_ms": 1693.9,
    "tier": "state",
    "tokens": 7235,
    "unanswered": false,
@@ -8806,9 +8793,9 @@
    "expect": "ask",
    "id": "sta-012",
    "kind": "ask",
-   "latency_ms": 2010.2,
+   "latency_ms": 1987.8,
    "tier": "state",
-   "tokens": 7222,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8822,7 +8809,7 @@
    "expect": "choose_or_ask",
    "id": "sta-013",
    "kind": "ask",
-   "latency_ms": 3077.9,
+   "latency_ms": 1412.6,
    "tier": "state",
    "tokens": 7223,
    "unanswered": false,
@@ -8838,7 +8825,7 @@
    "expect": "execute",
    "id": "sta-014",
    "kind": "execute",
-   "latency_ms": 1386.3,
+   "latency_ms": 3055.2,
    "tier": "state",
    "tokens": 7223,
    "unanswered": false,
@@ -8854,9 +8841,9 @@
    "expect": "ask",
    "id": "sta-015",
    "kind": "ask",
-   "latency_ms": 1365.5,
+   "latency_ms": 1386.2,
    "tier": "state",
-   "tokens": 7224,
+   "tokens": 7223,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8870,7 +8857,7 @@
    "expect": "choose_or_ask",
    "id": "sta-016",
    "kind": "ask",
-   "latency_ms": 1673.5,
+   "latency_ms": 3224.1,
    "tier": "state",
    "tokens": 7229,
    "unanswered": false,
@@ -8886,9 +8873,9 @@
    "expect": "choose_or_ask",
    "id": "sta-017",
    "kind": "ask",
-   "latency_ms": 1934.3,
+   "latency_ms": 2757.4,
    "tier": "state",
-   "tokens": 7229,
+   "tokens": 7228,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8902,9 +8889,9 @@
    "expect": "choose_or_ask",
    "id": "sta-018",
    "kind": "ask",
-   "latency_ms": 1345.4,
+   "latency_ms": 1698.0,
    "tier": "state",
-   "tokens": 7234,
+   "tokens": 7232,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8918,9 +8905,9 @@
    "expect": "execute",
    "id": "sta-019",
    "kind": "execute",
-   "latency_ms": 2054.7,
+   "latency_ms": 1812.7,
    "tier": "state",
-   "tokens": 7230,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8934,7 +8921,7 @@
    "expect": "choose_or_ask",
    "id": "sta-020",
    "kind": "ask",
-   "latency_ms": 1610.9,
+   "latency_ms": 1689.0,
    "tier": "state",
    "tokens": 7221,
    "unanswered": false,
@@ -8950,9 +8937,9 @@
    "expect": "choose_or_ask",
    "id": "sta-021",
    "kind": "ask",
-   "latency_ms": 1628.5,
+   "latency_ms": 1683.5,
    "tier": "state",
-   "tokens": 7226,
+   "tokens": 7227,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8966,9 +8953,9 @@
    "expect": "choose_or_ask",
    "id": "sta-022",
    "kind": "ask",
-   "latency_ms": 2495.4,
+   "latency_ms": 1670.6,
    "tier": "state",
-   "tokens": 7221,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8982,9 +8969,9 @@
    "expect": "ask",
    "id": "sta-023",
    "kind": "ask",
-   "latency_ms": 1446.7,
+   "latency_ms": 1993.0,
    "tier": "state",
-   "tokens": 7220,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -8998,7 +8985,7 @@
    "expect": "ask",
    "id": "sta-024",
    "kind": "ask",
-   "latency_ms": 2186.4,
+   "latency_ms": 2127.3,
    "tier": "state",
    "tokens": 7230,
    "unanswered": false,
@@ -9014,9 +9001,9 @@
    "expect": "execute",
    "id": "sta-025",
    "kind": "ask",
-   "latency_ms": 1217.5,
+   "latency_ms": 1398.9,
    "tier": "state",
-   "tokens": 7224,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9030,7 +9017,7 @@
    "expect": "execute",
    "id": "sta-026",
    "kind": "execute",
-   "latency_ms": 1908.5,
+   "latency_ms": 1940.9,
    "tier": "state",
    "tokens": 7223,
    "unanswered": false,
@@ -9046,7 +9033,7 @@
    "expect": "execute",
    "id": "sta-027",
    "kind": "ask",
-   "latency_ms": 2412.1,
+   "latency_ms": 1721.0,
    "tier": "state",
    "tokens": 7223,
    "unanswered": false,
@@ -9062,7 +9049,7 @@
    "expect": "execute",
    "id": "sta-028",
    "kind": "ask",
-   "latency_ms": 1770.3,
+   "latency_ms": 1408.5,
    "tier": "state",
    "tokens": 7222,
    "unanswered": false,
@@ -9078,9 +9065,9 @@
    "expect": "choose_or_ask",
    "id": "sta-029",
    "kind": "ask",
-   "latency_ms": 2000.0,
+   "latency_ms": 1687.1,
    "tier": "state",
-   "tokens": 7230,
+   "tokens": 7231,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9094,7 +9081,7 @@
    "expect": "execute",
    "id": "sta-030",
    "kind": "execute",
-   "latency_ms": 2064.5,
+   "latency_ms": 3004.4,
    "tier": "state",
    "tokens": 7231,
    "unanswered": false,
@@ -9110,7 +9097,7 @@
    "expect": "execute",
    "id": "sta-031",
    "kind": "execute",
-   "latency_ms": 2983.5,
+   "latency_ms": 1708.7,
    "tier": "state",
    "tokens": 7235,
    "unanswered": false,
@@ -9126,7 +9113,7 @@
    "expect": "execute",
    "id": "sta-032",
    "kind": "execute",
-   "latency_ms": 1355.0,
+   "latency_ms": 2112.3,
    "tier": "state",
    "tokens": 7235,
    "unanswered": false,
@@ -9142,7 +9129,7 @@
    "expect": "choose_or_ask",
    "id": "sta-033",
    "kind": "ask",
-   "latency_ms": 2589.4,
+   "latency_ms": 2076.3,
    "tier": "state",
    "tokens": 7230,
    "unanswered": false,
@@ -9158,7 +9145,7 @@
    "expect": "choose_or_ask",
    "id": "sta-034",
    "kind": "ask",
-   "latency_ms": 2467.9,
+   "latency_ms": 1322.5,
    "tier": "state",
    "tokens": 7230,
    "unanswered": false,
@@ -9174,7 +9161,7 @@
    "expect": "execute",
    "id": "sta-035",
    "kind": "execute",
-   "latency_ms": 1800.6,
+   "latency_ms": 1389.4,
    "tier": "state",
    "tokens": 7225,
    "unanswered": false,
@@ -9190,9 +9177,9 @@
    "expect": "refuse",
    "id": "neg-001",
    "kind": "refuse",
-   "latency_ms": 2321.9,
+   "latency_ms": 1899.3,
    "tier": "negative",
-   "tokens": 7278,
+   "tokens": 7240,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9206,9 +9193,9 @@
    "expect": "refuse",
    "id": "neg-002",
    "kind": "refuse",
-   "latency_ms": 1588.9,
+   "latency_ms": 1642.3,
    "tier": "negative",
-   "tokens": 7217,
+   "tokens": 7245,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9222,9 +9209,9 @@
    "expect": "refuse",
    "id": "neg-003",
    "kind": "ask",
-   "latency_ms": 2119.0,
+   "latency_ms": 1456.6,
    "tier": "negative",
-   "tokens": 7271,
+   "tokens": 7256,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9238,9 +9225,9 @@
    "expect": "refuse",
    "id": "neg-004",
    "kind": "ask",
-   "latency_ms": 1975.6,
+   "latency_ms": 1915.0,
    "tier": "negative",
-   "tokens": 7228,
+   "tokens": 7264,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9254,9 +9241,9 @@
    "expect": "refuse",
    "id": "neg-005",
    "kind": "refuse",
-   "latency_ms": 2205.0,
+   "latency_ms": 2204.4,
    "tier": "negative",
-   "tokens": 7278,
+   "tokens": 7288,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9270,9 +9257,9 @@
    "expect": "refuse",
    "id": "neg-006",
    "kind": "refuse",
-   "latency_ms": 2268.0,
+   "latency_ms": 1279.3,
    "tier": "negative",
-   "tokens": 7258,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9286,9 +9273,9 @@
    "expect": "refuse",
    "id": "neg-007",
    "kind": "refuse",
-   "latency_ms": 1374.1,
+   "latency_ms": 1457.3,
    "tier": "negative",
-   "tokens": 7232,
+   "tokens": 7242,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9302,9 +9289,9 @@
    "expect": "refuse",
    "id": "neg-008",
    "kind": "refuse",
-   "latency_ms": 1972.5,
+   "latency_ms": 1482.4,
    "tier": "negative",
-   "tokens": 7239,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9318,9 +9305,9 @@
    "expect": "refuse",
    "id": "neg-009",
    "kind": "refuse",
-   "latency_ms": 4137.0,
+   "latency_ms": 1489.1,
    "tier": "negative",
-   "tokens": 7245,
+   "tokens": 7243,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9334,9 +9321,9 @@
    "expect": "refuse",
    "id": "neg-010",
    "kind": "refuse",
-   "latency_ms": 1838.6,
+   "latency_ms": 1574.7,
    "tier": "negative",
-   "tokens": 7225,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9350,9 +9337,9 @@
    "expect": "refuse",
    "id": "neg-011",
    "kind": "refuse",
-   "latency_ms": 1505.6,
+   "latency_ms": 2776.9,
    "tier": "negative",
-   "tokens": 7247,
+   "tokens": 7248,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9366,9 +9353,9 @@
    "expect": "refuse",
    "id": "neg-012",
    "kind": "refuse",
-   "latency_ms": 1945.8,
+   "latency_ms": 3053.0,
    "tier": "negative",
-   "tokens": 7240,
+   "tokens": 7253,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9382,9 +9369,9 @@
    "expect": "refuse",
    "id": "neg-013",
    "kind": "ask",
-   "latency_ms": 1366.4,
+   "latency_ms": 1957.4,
    "tier": "negative",
-   "tokens": 7237,
+   "tokens": 7239,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9398,9 +9385,9 @@
    "expect": "ask",
    "id": "neg-014",
    "kind": "ask",
-   "latency_ms": 1649.7,
+   "latency_ms": 1746.6,
    "tier": "negative",
-   "tokens": 7240,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9414,9 +9401,9 @@
    "expect": "ask",
    "id": "neg-015",
    "kind": "ask",
-   "latency_ms": 1977.8,
+   "latency_ms": 1403.0,
    "tier": "negative",
-   "tokens": 7258,
+   "tokens": 7238,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9430,9 +9417,9 @@
    "expect": "ask",
    "id": "neg-016",
    "kind": "ask",
-   "latency_ms": 1395.0,
+   "latency_ms": 1405.0,
    "tier": "negative",
-   "tokens": 7226,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9446,9 +9433,9 @@
    "expect": "ask",
    "id": "neg-017",
    "kind": "ask",
-   "latency_ms": 2870.3,
+   "latency_ms": 2589.9,
    "tier": "negative",
-   "tokens": 7240,
+   "tokens": 7224,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9462,9 +9449,9 @@
    "expect": "ask",
    "id": "neg-018",
    "kind": "ask",
-   "latency_ms": 1939.1,
+   "latency_ms": 1340.7,
    "tier": "negative",
-   "tokens": 7230,
+   "tokens": 7210,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9478,9 +9465,9 @@
    "expect": "ask",
    "id": "neg-019",
    "kind": "ask",
-   "latency_ms": 1522.8,
+   "latency_ms": 1347.9,
    "tier": "negative",
-   "tokens": 7222,
+   "tokens": 7216,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9494,9 +9481,9 @@
    "expect": "ask",
    "id": "neg-020",
    "kind": "ask",
-   "latency_ms": 1574.3,
+   "latency_ms": 1450.4,
    "tier": "negative",
-   "tokens": 7230,
+   "tokens": 7233,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9510,7 +9497,7 @@
    "expect": "ask",
    "id": "neg-021",
    "kind": "ask",
-   "latency_ms": 2785.3,
+   "latency_ms": 2133.0,
    "tier": "negative",
    "tokens": 7232,
    "unanswered": false,
@@ -9526,9 +9513,9 @@
    "expect": "ask",
    "id": "neg-022",
    "kind": "ask",
-   "latency_ms": 3072.4,
+   "latency_ms": 1653.6,
    "tier": "negative",
-   "tokens": 7251,
+   "tokens": 7229,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9542,9 +9529,9 @@
    "expect": "ask",
    "id": "neg-023",
    "kind": "ask",
-   "latency_ms": 1485.8,
+   "latency_ms": 1558.8,
    "tier": "negative",
-   "tokens": 7238,
+   "tokens": 7243,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9558,9 +9545,9 @@
    "expect": "ask",
    "id": "neg-024",
    "kind": "ask",
-   "latency_ms": 2026.9,
+   "latency_ms": 1655.8,
    "tier": "negative",
-   "tokens": 7223,
+   "tokens": 7237,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9574,9 +9561,9 @@
    "expect": "ask",
    "id": "neg-025",
    "kind": "ask",
-   "latency_ms": 1976.4,
+   "latency_ms": 3754.6,
    "tier": "negative",
-   "tokens": 7253,
+   "tokens": 7235,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9590,9 +9577,9 @@
    "expect": "ask",
    "id": "neg-026",
    "kind": "ask",
-   "latency_ms": 1664.9,
+   "latency_ms": 3239.7,
    "tier": "negative",
-   "tokens": 7242,
+   "tokens": 7248,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9606,9 +9593,9 @@
    "expect": "ask",
    "id": "neg-027",
    "kind": "ask",
-   "latency_ms": 3730.7,
+   "latency_ms": 1448.4,
    "tier": "negative",
-   "tokens": 7218,
+   "tokens": 7245,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9622,9 +9609,9 @@
    "expect": "ask",
    "id": "neg-028",
    "kind": "ask",
-   "latency_ms": 1365.9,
+   "latency_ms": 1247.3,
    "tier": "negative",
-   "tokens": 7224,
+   "tokens": 7222,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
@@ -9638,9 +9625,9 @@
    "expect": "ask",
    "id": "neg-029",
    "kind": "ask",
-   "latency_ms": 1676.1,
+   "latency_ms": 1722.9,
    "tier": "negative",
-   "tokens": 7258,
+   "tokens": 7248,
    "unanswered": false,
    "unsafe": false,
    "wrong_exec": false
