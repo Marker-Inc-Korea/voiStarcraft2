@@ -43,7 +43,9 @@ def add_chain(bot, structure: str) -> None:
 def variants(entry: cat.CommandEntry) -> list[str]:
     """Every precondition that can be removed for ``entry`` (each must make the order refuse, nothing sent)."""
 
-    out = ["issuer", "busy", "building", "money"]
+    out = ["issuer", "busy", "building"]
+    if entry.upgrades:  # no UpgradeId (fuel tanks) = no UpgradeData cost: affordability is unknowable, never a refusal
+        out.append("money")
     if entry.valid_issuers[0] in PARENT_OF_LAB:
         out.append("techlab")
     if entry.upgrade_requirements and entry.upgrade_requirements[0][0]:
@@ -52,6 +54,16 @@ def variants(entry: cat.CommandEntry) -> list[str]:
     if len(entry.upgrades) > 1:
         out.append("pending")
     return out
+
+
+def price_upgrades(bot, entry: cat.CommandEntry, cost: tuple[int, int] = (100, 100)) -> None:
+    """The harness game data prices only Stimpack/Combat Shield; give every upgrade of ``entry`` a price so that "cannot
+    pay" is observable (UpgradeData.mineral_cost / vespene_cost; the real values are in the live game data)."""
+
+    for name in entry.upgrades:
+        proto = bot.game_data.upgrades[UpgradeId[name].value]._proto
+        if not proto.mineral_cost and not proto.vespene_cost:
+            proto.mineral_cost, proto.vespene_cost = cost
 
 
 def world(entry: cat.CommandEntry, *, missing: str = "", have: int = 0, pending_level: int = 0):
@@ -64,7 +76,10 @@ def world(entry: cat.CommandEntry, *, missing: str = "", have: int = 0, pending_
 
     bot = harness.make_bot()
     bot.minerals = bot.vespene = 5000
+    if missing == "pending":
+        missing, pending_level = "", 1
     issuer = entry.valid_issuers[0]
+    price_upgrades(bot, entry)
     next_index = have + (1 if pending_level else 0)
     building = entry.upgrade_requirements[min(next_index, len(entry.upgrade_requirements) - 1)][0] if entry.upgrade_requirements else ""
     if building and missing != "prereq":
@@ -108,3 +123,23 @@ def lower(entry: cat.CommandEntry, *, level: int | None = None):
     plan = route_policy_vector(result.vector).direct_plan
     assert plan is not None, entry.id
     return tuple(plan.ordered_actions)
+
+
+def probe() -> dict[str, list[str]]:
+    """Run every research entry through provider -> router -> executor with its correct preconditions."""
+
+    sent: list[str] = []
+    refused: list[str] = []
+    for entry in research_entries():
+        bot, _ = world(entry)
+        _, views, _ = harness.run_plan(bot, *lower(entry))
+        (sent if views else refused).append(entry.id)
+    return {"sent": sent, "refused": refused}
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.path.insert(0, ".")
+    outcome = probe()
+    print(f"research SENT {len(outcome['sent'])} of {len(research_entries())}; refused: {outcome['refused']}")
