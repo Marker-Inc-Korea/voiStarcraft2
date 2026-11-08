@@ -460,3 +460,32 @@ export BENCH_SCHEMA_MODULE=shipped_schema                       # shipped adapte
 .venv/bin/python scripts/bench/run.py full --reps 3 --asr-from "rt:gpt-realtime:vad350:shipped" --configs "fp:ext_rules:asrtxt,fp:shipped_fast:asrtxt,fp:shipped_regex:asrtxt,tx:gemini-3.5-flash-lite:shipped_fewshot:asrtxt"
 .venv/bin/python scripts/bench/report_shipped.py                # tables, pareto.svg, summary.json, misses_shipped.md
 ```
+
+## R5-E. Quiet-machine latency (load5 3.2 before / 3.9 after; first run on a quiet machine of this project)
+
+Raw: `docs/bench-results/latency_trace/quiet_r5/` (run_base450/vad350/vad250.jsonl, env*.json, analysis.json). Harness: `scripts/bench/latency_trace.py run --reps 3 --configs base450:silence=450 vad350:silence=350 vad250:silence=250` (three configs concurrently against separate web_gui instances; TTS audio verified against `audio_manifest.json`, 480/480 sha256 ok). n = 120 calls per config; cells n = 21-36, so p95 is a handful of calls.
+
+| config | tier | n | sem acc | unsafe | e2e ack p50 / p95 (ms) |
+|---|---|---|---|---|---|
+| base450 | macro | 36 | 81% | 0% | 2387 / 3436 |
+| base450 | micro (model path) | 27 | 89% | 0% | 2676 / 3791 |
+| base450 | operation | 36 | 92% | 0% | 3033 / 4558 |
+| base450 | rule words (emergency + micro) | 21 | 95% | 0% | 1620 / 2090 |
+| vad350 | macro | 36 | 86% | 0% | 2700 / 3568 |
+| vad350 | micro (model path) | 26 | 88% | 0% | 2857 / 4629 |
+| vad350 | operation | 36 | 89% | 0% | 3506 / 7445 |
+| vad350 | rule words | 22 | 91% | 0% | 1803 / 2824 |
+| vad250 | macro | 36 | 78% | 0% | 2557 / 3908 |
+| vad250 | micro (model path) | 27 | 89% | 0% | 2579 / 4058 |
+| vad250 | operation | 36 | 78% | 0% | 2918 / 4360 |
+| vad250 | rule words | 21 | 86% | 0% | 1723 / 2292 |
+
+Where the time goes (base450, p50 ms): a = VAD silence wait 1393-1411 (dominant on rule words, macro, micro), b = ASR 181-309, c = model tool call 920-1598 (dominant on operation), d = our server 4-6, e = our client 0.1-0.2, f = async compile 31-33.
+
+Findings:
+- Our own code (d + e) is < 10 ms of 1.6-3.0 s. The two controllable costs are the VAD silence wait (a) and the model call (c).
+- Shortening the silence wait does NOT pay: 350/250 ms cut `a` by 0.1-0.2 s at p50 but raise ASR time `b` (181-309 -> 330-670 ms) and lower accuracy (operation 92% -> 89% / 78%, rule words 95% -> 91% / 86%); end-to-end ack p50 gets worse or equal. 450 ms stays the default.
+- Rule words (emergency + micro rule families) ack in 1.6 s p50 / 2.1 s p95 on the quiet machine (round 3, load 225, measured 2.5 / 3.6 s).
+- Not met: the user target "as fast as possible" for emergency is bounded below by the 450 ms silence wait plus ASR plus the model-free path (about 1.6 s). Faster requires acting on partial transcripts, measured earlier at 24% wrong fires (stable 0 ms), so it is not adopted.
+
+Limits: one quiet session, 3 reps, synthetic TTS audio, proxy-minted secrets; the three configs ran concurrently (paired, relative comparison valid; absolute numbers include the concurrency). Not measured: live SC2 execution time after the ack.
