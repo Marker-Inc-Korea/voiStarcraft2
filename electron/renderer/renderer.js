@@ -133,10 +133,7 @@
   }
   function renderBackend() {
     $("btn-gear").dataset.backend = state.backendOk === null ? "unknown" : state.backendOk ? "ok" : "bad";
-    for (const action of EMERGENCY) $(`${action}-word`).textContent = t(action);
-    $("emergency").setAttribute("aria-label", t("tab_emergency"));
     $("term-word").textContent = t("command");
-    renderEmergencyKeys();
     $("cmd-input").placeholder = t("command");
     $("cmd-input").setAttribute("aria-label", t("command"));
     $("btn-gear").setAttribute("aria-label", t("settings"));
@@ -176,25 +173,7 @@
     refreshBoard(); pokeSoon();
   }
 
-  // ---------- emergency: buttons and global shortcuts take the same deterministic route (no model) ----------
-  const flashTimers = new Map();
-  function emergencyButton(action) { return $(`btn-${action}`); }
-  function renderEmergencyKeys() {
-    const keys = (state.env.shortcut && state.env.shortcut.emergency) || {};
-    for (const action of EMERGENCY) {
-      const button = emergencyButton(action);
-      const bad = keys[action] === false;
-      button.dataset.key = bad ? "bad" : "ok";
-      if (button.dataset.state === "idle") button.querySelector(".em-sub").textContent = bad ? t("em_nokey") : "";
-    }
-  }
-  function flashEmergency(action, kind) { // kind: busy | sent | failed
-    const button = emergencyButton(action);
-    clearTimeout(flashTimers.get(action));
-    button.dataset.state = kind;
-    button.querySelector(".em-sub").textContent = kind === "busy" ? "…" : kind === "sent" ? t("em_sent") : t("em_failed");
-    if (kind !== "busy") flashTimers.set(action, setTimeout(() => { button.dataset.state = "idle"; renderEmergencyKeys(); }, kind === "failed" ? 2400 : 1400));
-  }
+  // ---------- emergency: global shortcuts (and the voice fast rules) take the same deterministic route (no model); the HUD has no emergency buttons ----------
   // Folds an emergency result ({ok, action, response|error}) into one board card: honest about refusal, never invents success.
   function foldEmergency(result) {
     if (!result || !EMERGENCY.includes(result.action)) return;
@@ -204,12 +183,9 @@
       applyResponse(card, result.response);
       card.tier = "emergency";
     } else card.error = String(result.error || "failed").replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
-    const refused = Boolean(card.error);
-    flashEmergency(result.action, refused ? "failed" : "sent");
     refreshBoard(); pokeSoon();
   }
   async function triggerEmergency(action) {
-    flashEmergency(action, "busy");
     let result;
     try { result = await api.emergency(action); } catch (error) { result = { ok: false, action, error: String((error && error.message) || error) }; }
     foldEmergency(result);
@@ -495,7 +471,6 @@
     if (!text) return;
     input.value = ""; $("cmd-form").dataset.filled = "false"; submitText(text);
   });
-  for (const action of EMERGENCY) emergencyButton(action).addEventListener("click", () => triggerEmergency(action));
   $("cmd-input").addEventListener("input", () => { $("cmd-form").dataset.filled = $("cmd-input").value ? "true" : "false"; });
   $("orb").addEventListener("click", toggleVoice);
   $("btn-gear").addEventListener("click", () => setSettingsOpen(!state.dock.settingsOpen));

@@ -165,8 +165,6 @@ async function main() {
   check("clicking the input grants focus", d.focusable === true && d.focused === true, { focusable: d.focusable, focused: d.focused });
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='앞마당 방어해';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(300);
-  await js("document.getElementById('btn-retreat').click()");
-  await sleep(300);
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='refuse me';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(2800);
   await warp(display.x + display.width / 2, display.y + 100);
@@ -194,7 +192,7 @@ async function main() {
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await sleep(600);
   await screencapture("06-minimal-bar");
-  check("minimal HUD shows only orb, input, 후퇴/홀드/멈춰, gear", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-retreat,btn-hold,btn-stop,btn-gear' && document.getElementById('retreat-word').textContent==='후퇴' && document.getElementById('hold-word').textContent==='홀드' && document.getElementById('stop-word').textContent==='멈춰' && document.getElementById('cmd-input').placeholder==='명령'"));
+  check("minimal HUD shows only orb, input, gear (no retreat/hold/stop buttons)", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-gear' && !document.getElementById('emergency') && document.getElementById('cmd-input').placeholder==='명령'"));
 
   // ---- 8. settings panel: gear click opens at once, pins the bar, every tab, live apply, Esc / outside / gear close ----
   const openedAt = Date.now();

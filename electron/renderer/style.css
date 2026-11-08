@@ -73,7 +73,7 @@ body[data-dock="top"] .panel-body { flex-direction: column-reverse; }
 .outline-glow { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; opacity: calc(.04 + var(--border-glow) * .26); filter: blur(var(--blur-sm)); }
 .rim-a { stop-color: var(--highlight); } .rim-b { stop-color: var(--border-strong); } .rim-c { stop-color: var(--border); } .rim-d { stop-color: var(--border-strong); }
 
-/* ---------- bar: orb, one-line transcript + ops word, input, 후퇴/홀드/멈춰, gear ---------- */
+/* ---------- bar: orb, one-line transcript + ops word, input, gear ---------- */
 .bar { display: flex; align-items: center; gap: var(--space-3); flex: none; }
 .bar-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .line { display: flex; align-items: center; gap: var(--space-2); min-width: 0; min-height: 24px; }
@@ -92,25 +92,6 @@ body[data-dock="top"] .panel-body { flex-direction: column-reverse; }
 .cmd-form input:focus { box-shadow: inset 0 0 0 1px var(--focus), 0 0 0 4px var(--ring), 0 0 0 1px var(--focus); }
 .term-ghost { display: none; }
 
-/* emergency words: three clear rounded buttons, big targets that can be hit blindly. retreat = destructive, hold = amber, stop = neutral */
-.emergency { flex: none; display: flex; gap: var(--space-2); }
-.em { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-width: 76px; height: 50px; padding: 0 var(--space-4); border: 0; border-radius: var(--radius-xl);
-  --em-c: var(--fg); --em-a: 14%; color: var(--fg); font-weight: var(--fw-semibold); font-size: calc(var(--text) + 2px); font-variant-numeric: tabular-nums;
-  background: linear-gradient(color-mix(in oklab, var(--em-c) var(--em-a), transparent), color-mix(in oklab, var(--em-c) var(--em-a), transparent)), var(--line-scrim);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--em-c) 34%, transparent), inset 0 1px 0 var(--highlight), var(--shadow-sm);
-  transition: box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), transform var(--dur-press) var(--ease-out);
-  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * .5)); backdrop-filter: blur(calc(var(--glass-blur) * .5)); }
-.em[data-action="retreat"] { --em-c: var(--destructive); color: var(--destructive); }
-.em[data-action="hold"] { --em-c: var(--warn); }
-.em:hover { --em-a: 22%; }
-.em:active { transform: scale(.97); --em-a: 28%; }
-.em-sub { display: block; font-style: normal; font-size: var(--fs-2xs); font-weight: var(--fw-semibold); line-height: 1; min-height: 10px; opacity: .85; }
-.em-sub:empty { display: none; }
-.em[data-state="busy"] { --em-a: 30%; }
-.em[data-state="sent"] { box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--em-c) 80%, transparent), inset 0 1px 0 var(--highlight), 0 0 0 4px color-mix(in oklab, var(--em-c) 18%, transparent); }
-.em[data-state="failed"] { --em-c: var(--destructive); --em-a: 26%; box-shadow: inset 0 0 0 2px var(--destructive), 0 0 0 4px color-mix(in oklab, var(--destructive) 20%, transparent); }
-.em[data-key="bad"] .em-sub { color: var(--destructive); }
-
 /* liquid-glass pill (gear): fully round, an inset highlight layer (::before) under the content layer, shadow transition .12s ease-out */
 .gear { position: relative; flex: none; width: 40px; height: 40px; display: grid; place-items: center; border: 0; padding: 0; border-radius: var(--radius-pill); color: var(--fg-primary); isolation: isolate;
   background: var(--field-scrim); box-shadow: var(--edge), var(--shadow-sm); transition: box-shadow .12s var(--ease-out), color .12s var(--ease-out), transform var(--dur-press) var(--ease-out), background .12s var(--ease-out);
@@ -127,9 +108,7 @@ body[data-dock="top"] .panel-body { flex-direction: column-reverse; }
 body[data-dock="right"] .bar, body[data-dock="left"] .bar, .bar { flex-wrap: wrap; }
 .bar-main { flex-basis: 240px; }
 body[data-dock="right"] .bar-main, body[data-dock="left"] .bar-main { order: 5; flex-basis: 100%; }
-body[data-dock="right"] .emergency, body[data-dock="left"] .emergency { flex: 1; }
-body[data-dock="right"] .em, body[data-dock="left"] .em { flex: 1; min-width: 0; }
-@media (max-width: 700px) { .emergency { order: 4; flex: 1 1 100%; } .em { flex: 1; } .bar-main { order: 5; flex-basis: 100%; } }
+@media (max-width: 700px) { .bar-main { order: 5; flex-basis: 100%; } }
 
 /* mic orb = a small glowing planet: nebula sphere + terminator shading, an orbiting ring and a tiny moon */
 .orb { position: relative; flex: none; width: 64px; height: 64px; border: none; background: none; padding: 0; border-radius: 50%; transition: transform var(--dur-press) var(--ease-out); }
@@ -273,13 +252,6 @@ body[data-skin="terminal"] .term-ghost .cursor { display: inline-block; width: .
 body[data-skin="terminal"] .cmd-form[data-filled="true"] #term-word, body[data-skin="terminal"] .cmd-form[data-filled="true"] .cursor { display: none; }
 body[data-skin="terminal"] .cmd-form:focus-within:not([data-filled="true"]) #term-word { opacity: .45; }
 
-/* emergency words: rounded console keys, phosphor tinted */
-body[data-skin="terminal"] .em { -webkit-backdrop-filter: none; backdrop-filter: none; color: var(--term); text-shadow: 0 0 8px color-mix(in srgb, var(--em-c) 60%, transparent), 0 0 2px rgba(0,0,0,var(--legible)); }
-body[data-skin="terminal"] .em[data-action="retreat"] { color: var(--destructive); } body[data-skin="terminal"] .em[data-action="hold"] { color: var(--warn); }
-body[data-skin="terminal"] .em[data-action="stop"] { --em-c: var(--term); }
-body[data-skin="terminal"] .em-word::before { content: "["; opacity: .6; margin-right: 2px; } body[data-skin="terminal"] .em-word::after { content: "]"; opacity: .6; margin-left: 2px; }
-body[data-skin="terminal"] .em[data-state="sent"] { background: color-mix(in srgb, var(--em-c) 80%, transparent); color: #021a0a; text-shadow: none; }
-body[data-skin="terminal"] .em[data-state="failed"] { animation: blink .5s steps(1) 4; }
 body[data-skin="terminal"] .gear { color: var(--term); -webkit-backdrop-filter: none; backdrop-filter: none; }
 body[data-skin="terminal"] .gear:hover { background: rgb(44 255 122 / .16); }
 body[data-skin="terminal"] .gear[aria-pressed="true"] { color: var(--term-hi); }

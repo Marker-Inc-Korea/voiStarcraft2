@@ -20,7 +20,7 @@ on the screen edge use 0.6 x that). Left/right/top docks are plain **rounded rec
 and a densely sampled polygon (24 points per corner) that main uses for pointer hit-testing, so the rounded corners, the slanted
 sides and everything outside the shape stay click-through to the game (`main.js` `pointerOverPanel`, not the rectangle). Radii are
 clamped so they never overlap (a radius larger than half the height becomes a pill). Words only: orb · one-line transcript · `작전 N` (count of OPEN
-operations: it falls as they complete or block; only when none is open does it show the session total) · input (`명령`) · **`후퇴` `홀드` `멈춰`** · gear. **There are no operation cards in the HUD**: the renderer still derives
+operations: it falls as they complete or block; only when none is open does it show the session total) · input (`명령`) · gear (with the status LED). **There are no retreat/hold/stop buttons in the HUD** (removed by user decision; the emergency path below stays). **There are no operation cards in the HUD**: the renderer still derives
 them from backend evidence (`stages.js` + `board_cards.js`: heard/understood/assigned/ordered/effect; 효과 only for
 `effect_observed`, `시뮬` for the fake bot) and publishes them through `window.commander.board.publish(cards)` -> `board:publish`
 to the tactical board window (`electron/board*`, separate small translucent window, upper-left).
@@ -31,11 +31,11 @@ pinned open meanwhile. Tabs: 유리 레이아웃 무지개 음성 긴급 (전술
 
 ### Emergency parity
 
-The three words are always visible, large (min 76×50), and have global shortcuts that take the **same route**:
-button or shortcut -> `window.commander.emergency(action)` -> IPC `commander:emergency` (enum `retreat|hold|stop`, validated
-in `protocol.js`) -> `POST /api/emergency {action}` (deterministic, no model) -> result word on the button (`…` / `전달` /
-`실패`) and one emergency card to the board. Defaults `Cmd/Ctrl+Shift+R` retreat, `+H` hold, `+X` stop (설정 > 긴급). A shortcut that
-cannot be registered shows `키불가` on its button and in settings; it is never silent. Registration logic is pure and tested
+Emergency has no HUD buttons. It is reached by the voice fast rules (`후퇴`/`홀드`/`멈춰`), `Cmd/Ctrl+.` (retreat) in the HUD, and the
+global shortcuts, which take the **same route**: shortcut -> main -> `runEmergency` -> `POST /api/emergency {action}` (deterministic, no
+model; enum `retreat|hold|stop`, validated in `protocol.js`, also exposed as `window.commander.emergency(action)` -> IPC
+`commander:emergency`) -> one emergency card to the board. Defaults `Cmd/Ctrl+Shift+R` retreat, `+H` hold, `+X` stop (설정 > 긴급). A shortcut
+that cannot be registered shows `키불가` in settings; it is never silent. Registration logic is pure and tested
 (`shortcuts.js`, fake `globalShortcut`).
 
 ### Skins (유리 > 스킨)
@@ -53,8 +53,7 @@ live (no reload) and persisted (`glass.skin`).
 with a 1.4 squircle factor (`--radius-md..3xl`, `--radius-pill`), 4 px spacing unit, blur steps 4/8/12/16/24/64, in-out and out easings,
 a neutral oklch palette with the .85/.55/.15/.10 alpha ladder (dark default; light via `prefers-color-scheme`), a layered low-alpha
 shadow scale and a hairline material edge (1 px border at .10 + inner top highlight). Every surface is a rounded rectangle or a pill:
-settings use a segmented tab control and grouped inset lists with hairline separators, the three emergency words are rounded buttons
-(retreat = destructive, hold = amber, stop = neutral), the gear is a fully round "liquid glass" pill. The HUD silhouette itself
+settings use a segmented tab control and grouped inset lists with hairline separators, the gear is a fully round "liquid glass" pill. The HUD silhouette itself
 (clip-path) belongs to `hud_shape.js`. The terminal skin only re-declares the colour tokens (phosphor green, monospace) and adds
 scanline/glow effects, never angular geometry. `test/ui_tokens.test.js` guards against `clip-path: polygon` / square corners in the CSS.
 The system font stack (SF on macOS) is used; no font files are vendored.
