@@ -262,6 +262,22 @@ MICROMACHINE_DIRECT_ONLY_ABILITIES: Final[frozenset[str]] = frozenset(
         "supply_drop",
         "lift_off",
         "land",
+        # Round 5 catalog (docs/sc2-command-catalog.md): every other Terran command the API lists.
+        "ghost_hold_fire",
+        "ghost_release_fire",
+        "arm_nuke",
+        "hunter_seeker_missile",
+        "point_defense_drone",
+        "bunker_salvage",
+        "spray",
+        "bunker_stimpack",
+        "widow_mine_attack",
+        "bunker_load",
+        "command_center_load_all",
+        "command_center_unload_all",
+        "bunker_unload_all",
+        "supply_depot_lower",
+        "supply_depot_raise",
     }
 )
 """Abilities only the Direct SC2 route executes (Orbital Command calldowns, building lift/land).
