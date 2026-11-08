@@ -5562,8 +5562,11 @@ def _decide_realtime_intent(
         # question (the macro layer would only queue or stall it).  Never raises; None = the call proceeds.
         from starcraft_commander import realtime_catalog
 
-        if realtime_intent.classify_tier(tool_arguments) == realtime_intent.TIER_MACRO:
-            vetoed = realtime_catalog.veto_macro_call(transcript, catalog_state)  # type: ignore[arg-type]
+        tier_for_veto = realtime_intent.classify_tier(tool_arguments)
+        if tier_for_veto in {realtime_intent.TIER_MACRO, realtime_intent.TIER_MICRO}:
+            vetoed = realtime_catalog.veto_vague_call(tool_arguments, transcript)
+            if vetoed is None and tier_for_veto == realtime_intent.TIER_MACRO:
+                vetoed = realtime_catalog.veto_macro_call(transcript, catalog_state)  # type: ignore[arg-type]
             if vetoed is not None:
                 message = vetoed.narration_ko
                 return _RealtimeDecision(

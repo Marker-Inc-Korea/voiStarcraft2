@@ -401,7 +401,7 @@ CATALOG_MODE_ENV: Final[str] = "VOI_REALTIME_CATALOG_MODE"
 # off = shipped surface (V0); v1 = catalog.command_id enum (the model picks the id); v2 = catalog.intent phrase (the
 # server resolver picks the command from the live game state).  The default is the benchmark winner
 # (docs/voice-intent-benchmark.md R5-E); the env var overrides it for A/B runs.
-DEFAULT_CATALOG_MODE: Final[str] = "off"
+DEFAULT_CATALOG_MODE: Final[str] = "v2"
 
 
 def default_catalog_mode(env: Mapping[str, str] | None = None) -> str:
@@ -732,11 +732,11 @@ def build_realtime_instructions(*, rules: bool = True, fewshot: bool = True, cat
         elif mode == "v2":
             text += _CATALOG_RULE_V2
     if fewshot:
-        text += _INSTRUCTION_FEWSHOT
         if mode in {"v1", "v3"}:
             text += _CATALOG_FEWSHOT_V1
         elif mode == "v2":
             text += _CATALOG_FEWSHOT_V2
+        text += _INSTRUCTION_FEWSHOT
     return text
 
 

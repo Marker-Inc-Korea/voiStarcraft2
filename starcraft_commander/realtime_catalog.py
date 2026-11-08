@@ -389,6 +389,33 @@ def veto_macro_call(transcript: str, state: cat.CatalogState | None) -> Resoluti
     return None
 
 
+_CLOAK_CASTER_WORDS: Final[re.Pattern[str]] = re.compile(r"유령|고스트|밴시|ghost|banshee", re.IGNORECASE)
+
+
+def veto_vague_call(tool_arguments: Mapping[str, object], transcript: str) -> Resolution | None:
+    """Ask once instead of executing a model call that names nothing concrete (state-independent guards).
+
+    * macro ``tech_transition`` with no building and no production target ("테크 올려"): the macro layer would pick tech on
+      its own; the user did not say which.
+    * a bare cloak micro ("클로킹") whose transcript names neither ghost nor banshee: the model guessed the caster.
+    """
+
+    if not str(transcript or "").strip() or _unsafe_text(transcript) or phrase_is_negated(transcript):
+        return None
+    macro = tool_arguments.get("macro")
+    if isinstance(macro, Mapping) and macro.get("task_type") == "tech_transition":
+        if not macro.get("building_tasks") and not macro.get("production_targets"):
+            text = "어떤 테크를 올릴까요? (예: 군수공장 / 우주공항 / 공학 연구소)"
+            return Resolution(KIND_ASK, reason="vague_tech", reason_ko=text, narration_ko=text, source="vague_guard")
+    micro = tool_arguments.get("micro")
+    if isinstance(micro, (list, tuple)) and micro:
+        first = micro[0] if isinstance(micro[0], Mapping) else {}
+        if str(first.get("ability", "")) in {"ghost_cloak", "banshee_cloak"} and not _CLOAK_CASTER_WORDS.search(transcript):
+            text = "클로킹: 어느 쪽에 할까요? 밴시 / 유령"
+            return Resolution(KIND_ASK, reason="ambiguous_issuer", reason_ko=text, narration_ko=text, source="vague_guard")
+    return None
+
+
 def resolve_catalog_call(
     catalog: Mapping[str, object] | None,
     transcript: str,
