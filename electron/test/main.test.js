@@ -42,3 +42,10 @@ assert.match(css,/color-mix\(in srgb, var\(--tint\) calc\(var\(--glass-alpha\) \
 test("cosmic skin keeps the additive canvas, gradient rim, sweep and planet orb",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(dir,"renderer","space.js"),"utf8");
 assert.match(space,/globalCompositeOperation = "lighter"/);assert.match(html,/class="sweep"/);assert.match(html,/class="orb-ring"[^>]*><i class="moon"><\/i><\/span>/);assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
 assert.match(space,/cfg\.enabled !== false/);});
+test("releaseFocus blurs whenever the dock was focusable: a panel window reports isFocused() false after a real click yet still holds the keyboard",()=>{
+  const main=fs.readFileSync(path.join(__dirname,"..","main.js"),"utf8");
+  const body=main.slice(main.indexOf("function releaseFocus"),main.indexOf("function focusDock"));
+  assert.match(body,/windowFocusable\) mainWindow\.blur\(\)/);
+  assert.doesNotMatch(body,/isFocused\(\)/,"gating blur() on isFocused() skips the release for type:'panel' windows (real-click probe: typed text kept landing in the HUD after collapse)");
+  assert.match(body,/setFocusable\(false\)/);
+});
