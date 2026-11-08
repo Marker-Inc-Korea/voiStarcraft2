@@ -63,8 +63,9 @@ description_ko, effect, energy_cost, produces, upgrades (levels), upgrade_requir
   (`NeosteelFrame`, `CycloneRapidFireLaunchers`, `RavenCorvidReactor`, `RavenRecalibratedExplosives`,
   `RavenEnhancedMunitions`, `AdvancedBallistics`, `HighCapacityFuelTanks`); the upgrade ids come from stableid.json names
   (`EXTRA_UPGRADES` in the generator) and `HighCapacityFuelTanks` has NO upgrade id in stableid.json, so it cannot be
-  tracked as done/pending. burnysc2 lists `SALVAGEEFFECT_SALVAGE` (4128) for the Bunker while the 2019 header says
-  `EFFECT_SALVAGE` (32); the catalog sends the burnysc2 member and flags 13 (command, issuer) rows as
+  tracked as done/pending. burnysc2 lists `SALVAGEEFFECT_SALVAGE` (4128) for the Bunker, but stableid.json names id 4128
+  `MothershipCloak`, so the catalog sends the header-documented generic `EFFECT_SALVAGE` (32, Target None): *generic id;
+  live remap unconfirmed*. 13 (command, issuer) rows are flagged as
   `not_in_python_sc2_unit_abilities` (header says the unit has it; burnysc2's per-unit table does not).
 
 ## What only a live SC2 can confirm

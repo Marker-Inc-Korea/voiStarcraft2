@@ -56,6 +56,7 @@ from starcraft_commander.map_resolver import (
 from starcraft_commander.micromachine_terran_capabilities import (
     canonical_terran_unit_family,
 )
+from starcraft_commander import sc2_effects
 from starcraft_commander.sc2_executor import SC2_UNIT_TYPE_IDS
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
@@ -310,6 +311,10 @@ SC2_SEMANTIC_ABILITIES: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = {
         ("BARRACKSFLYING", "FACTORYFLYING", "STARPORTFLYING", "COMMANDCENTERFLYING", "ORBITALCOMMANDFLYING"),
     ),
 }
+# Effect / behavior / other tokens the table above does not carry (hold fire, hunter-seeker, bunker/CC cargo, ...) come
+# from the command catalog (starcraft_commander/sc2_effects.py): token -> ability, caster types, target kind.
+_EFFECT_TOKENS: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = sc2_effects.effect_abilities(SC2_SEMANTIC_ABILITIES)
+SC2_SEMANTIC_ABILITIES.update(_EFFECT_TOKENS)
 
 # Lift / Land are building-specific abilities (LIFT_BARRACKS 452, LIFT_FACTORY 485, ... each remaps to the generic
 # LIFT 3679 / LAND 3678): the executable id is chosen per caster type, like the Banshee-specific cloak.
@@ -322,10 +327,11 @@ _TYPE_SPECIFIC_ABILITIES: Final[dict[str, dict[str, str]]] = {
         "BARRACKSFLYING": "LAND_BARRACKS", "FACTORYFLYING": "LAND_FACTORY", "STARPORTFLYING": "LAND_STARPORT",
         "COMMANDCENTERFLYING": "LAND_COMMANDCENTER", "ORBITALCOMMANDFLYING": "LAND_ORBITALCOMMAND",
     },
+    **sc2_effects.type_specific(_EFFECT_TOKENS),
 }
 # Abilities whose casters are STRUCTURES (python-sc2 keeps them in ``bot.structures``, flying ones possibly in units).
 _STRUCTURE_CASTER_TOKENS: Final[frozenset[str]] = frozenset(
-    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"}
+    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"} | sc2_effects.structure_caster_tokens(_EFFECT_TOKENS)
 )
 _ORBITAL_TOKENS: Final[frozenset[str]] = frozenset({"scanner_sweep", "calldown_mule", "supply_drop"})
 _SUPPLY_DEPOT_TYPES: Final[frozenset[str]] = frozenset({"SUPPLYDEPOT", "SUPPLYDEPOTLOWERED"})
