@@ -979,6 +979,11 @@ class PythonSC2BotAdapter:
 
         if action.count <= 0:
             return _refusal_report(action.count, "non_positive_count")
+        from starcraft_commander import sc2_research  # catalog-driven level/researcher/ability choice (python-sc2 bots)
+
+        planned = sc2_research.resolve_research(action.subject, self.bot, only_tags=sc2_research.pinned_tags(action))
+        if planned is not None:
+            return await sc2_research.issue_research(self, action, planned)
         upgrade = self._resolve_upgrade(action.subject)
         if upgrade is None:
             return _refusal_report(action.count, "unresolvable_upgrade")
@@ -995,6 +1000,13 @@ class PythonSC2BotAdapter:
             if await self._issue_unit_order(structure.research, upgrade):
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_researchers")
+
+    def catalog_state(self) -> object:
+        """``sc2_catalog.CatalogState`` of the live bot (feeds ``evaluate`` / ``issuable_now``)."""
+
+        from starcraft_commander.sc2_catalog_state import build_catalog_state
+
+        return build_catalog_state(self.bot)
 
     async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
         """Warp in units through ready structures at a validated point."""
@@ -2916,6 +2928,11 @@ class PythonSC2BotAdapter:
                 candidates = [c for c in candidates if _has_addon_kind(c, "techlab") is not False]
             return candidates
         if kind == "research_upgrade":
+            from starcraft_commander import sc2_research
+
+            planned = sc2_research.resolve_research(action.subject, self.bot)
+            if planned is not None:
+                return list(planned.structures)
             researcher_name = self._effective_researcher(
                 action, _normalized_name(action.metadata.get("researcher"))
             )
