@@ -163,7 +163,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "build_nuke": ("핵+준비|장전|만들|생산|장착", "핵+미사일+준비|만들|장전", "고스트|유령+핵+준비|장전", "nuke+arm|prepare|build|load|ready", "사일로+핵", "-발사|쏴|투하|떨"),
     # ------------------------------------------------------------------ morph (14)
     "morph_siegemode": (
-        "탱크+포대|시즈|공성|고정|박아|고정사격|자리잡|배치|siege", "시즈+모드|해줘|켜|전환|siege", "탱크+사거리+늘|길게|멀리+모드", "tank+siege|deploy|fixed|sieged",
+        "탱크+포대|시즈|공성|고정|박아|고정사격|자리잡|배치|siege", "시즈+모드|해줘|켜|전환|siege", "탱크+사거리|사정거리|멀리+늘|길게|올|키|크게|넓|해줘", "tank+range+increase|longer|more", "tank+siege|deploy|fixed|sieged",
         "-풀|해제|이동|돌려|unsiege|일어나|기동",
     ),
     "morph_unsiege": (

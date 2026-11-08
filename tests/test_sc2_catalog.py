@@ -137,3 +137,84 @@ def test_issuable_now_lists_only_what_the_state_allows() -> None:
     ids = {r.command_id for r in cat.issuable_now(state)}
     assert {"train_scv", "build_barracks", "morph_supplydepot_lower"} <= ids or {"train_scv", "build_barracks"} <= ids
     assert "effect_scan" not in ids and "research_stimpack" not in ids
+
+
+# --------------------------------------------------------------------------- plain-language intent quality
+
+import json  # noqa: E402
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import os  # noqa: E402
+
+INTENT_CORPUS = Path(os.environ.get("VOI_INTENT_CORPUS") or Path(__file__).resolve().parents[1] / "scripts" / "bench" / "intent_corpus.jsonl")
+
+
+def test_every_entry_has_two_korean_aliases_a_description_and_english_text() -> None:
+    for entry in cat.all_commands():
+        assert len(entry.aliases_ko) >= 2, entry.id
+        assert entry.description_ko.strip() and entry.effect.strip() and entry.aliases_en, entry.id
+
+
+def test_every_entry_is_reachable_from_its_own_first_alias_and_has_cues() -> None:
+    from starcraft_commander.sc2_catalog_cues import CUES
+
+    assert set(CUES) <= {e.id for e in cat.all_commands()}
+    unreachable = []
+    for entry in cat.all_commands():
+        top = {e.id for e in cat.search(entry.aliases_ko[0], 5)}
+        if entry.id not in top:
+            unreachable.append((entry.id, entry.aliases_ko[0], sorted(top)))
+    assert unreachable == []
+
+
+# Held-out phrases: written AFTER the cues and NOT in scripts/bench/intent_corpus.jsonl (no tuning on them).
+HELD_OUT = [
+    ("탱크 사거리 늘려줘", {"morph_siegemode", "research_terranvehicleweapons"}),
+    ("밴시 안 보이게 연구해", {"research_bansheecloakingfield"}),
+    ("유령 투명해지는 거 연구", {"research_personalcloaking"}),
+    ("보병 방어 업글", {"research_terraninfantryarmor"}),
+    ("배틀크루저 순간이동", {"effect_tacticaljump"}),
+    ("레이븐 터렛 깔아", {"effect_autoturret"}),
+    ("벙커 팔아버려", {"effect_salvage"}),
+    ("병영에 리액터 달아줘", {"build_reactor"}),
+    ("군수공장에 테크랩 붙여", {"build_techlab"}),
+    ("서플 내려줘", {"morph_supplydepot_lower"}),
+    ("해병 피 깎고 달려", {"effect_stim"}),
+    ("scan their natural", {"effect_scan"}),
+    ("call down a mule", {"effect_calldownmule"}),
+    ("lift the barracks", {"lift"}),
+    ("siege the tanks", {"morph_siegemode"}),
+    ("research combat shield", {"research_combatshield"}),
+    ("vehicle weapons upgrade", {"research_terranvehicleweapons"}),
+    ("토르 폭발 모드로", {"morph_thorexplosivemode"}),
+    ("해방선 대공 모드로 돌아와", {"morph_liberatoraamode"}),
+    ("벤시 클로킹 켜", {"behavior_cloakon"}),
+]
+
+
+def test_held_out_phrases_return_the_right_command_in_the_top_three() -> None:
+    misses = []
+    for text, expected in HELD_OUT:
+        top = [e.id for e in cat.search(text, 3)]
+        if not set(top) & expected:
+            misses.append((text, sorted(expected), top))
+    assert len(misses) <= 3, misses  # report-the-rate guard, not a perfection claim
+
+
+def _gold_id(token: str) -> str:
+    return re.split(r"[#@]", token)[0].lower()
+
+
+@pytest.mark.skipif(not INTENT_CORPUS.is_file(), reason="scripts/bench/intent_corpus.jsonl is not on this branch")
+def test_intent_corpus_rows_resolve_to_an_acceptable_command() -> None:
+    rows = [json.loads(line) for line in INTENT_CORPUS.read_text(encoding="utf-8").splitlines() if line.strip()]
+    intent = [r for r in rows if r["id"].startswith("int-")]
+    assert len(intent) == 57
+    top1 = top3 = 0
+    for row in intent:
+        acceptable = {_gold_id(g) for g in row["gold"]["acceptable"]}
+        ranked = [e.id for e in cat.search(row["text"], 3)]
+        top1 += bool(ranked) and ranked[0] in acceptable
+        top3 += bool(set(ranked) & acceptable)
+    assert top3 / len(intent) >= 0.85, (top1, top3)
