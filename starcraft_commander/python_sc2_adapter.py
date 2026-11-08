@@ -1001,6 +1001,13 @@ class PythonSC2BotAdapter:
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_researchers")
 
+    def catalog_state(self) -> object:
+        """``sc2_catalog.CatalogState`` of the live bot (feeds ``evaluate`` / ``issuable_now``)."""
+
+        from starcraft_commander.sc2_catalog_state import build_catalog_state
+
+        return build_catalog_state(self.bot)
+
     async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
         """Warp in units through ready structures at a validated point."""
 

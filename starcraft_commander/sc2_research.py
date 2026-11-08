@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from starcraft_commander import sc2_catalog as cat
+from starcraft_commander.sc2_catalog_state import order_ability_names
 
 _NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
 
@@ -70,17 +71,6 @@ def _is_python_sc2_bot(bot: object) -> bool:
     return getattr(bot, "game_data", None) is not None and hasattr(getattr(bot, "state", None), "upgrades")
 
 
-def _order_ability_names(structure: object) -> set[str]:
-    names: set[str] = set()
-    for order in getattr(structure, "orders", None) or ():
-        ability = getattr(order, "ability", None)
-        exact = getattr(ability, "exact_id", None)
-        name = getattr(exact, "name", None)
-        if name:
-            names.add(name)
-    return names
-
-
 def _structures(bot: object) -> list[object]:
     seen: dict[int, object] = {}
     for group in (getattr(bot, "structures", None), getattr(bot, "units", None)):
@@ -89,51 +79,18 @@ def _structures(bot: object) -> list[object]:
     return list(seen.values())
 
 
-def _addon_kind(unit: object, techlab_tags: set[int], reactor_tags: set[int]) -> str:
-    tag = getattr(unit, "add_on_tag", 0) or 0
-    if not tag:
-        return "none"
-    return "techlab" if tag in techlab_tags else "reactor" if tag in reactor_tags else ""
-
-
 def snapshot(bot: Any, entry: cat.CommandEntry, *, only_tags: frozenset[int] | None = None) -> cat.CatalogState:
-    """The ``CatalogState`` ``evaluate`` needs, read from a python-sc2 bot (structures, upgrades done/pending, money)."""
+    """The shared ``build_catalog_state`` snapshot; a pinned lease narrows the researcher candidates to its tags."""
 
-    from sc2.ids.upgrade_id import UpgradeId
+    from dataclasses import replace
 
-    techlabs = set(getattr(bot, "techlab_tags", ()) or ())
-    reactors = set(getattr(bot, "reactor_tags", ()) or ())
-    owned = []
-    orders: set[str] = set()
-    for unit in _structures(bot):
-        tag = getattr(unit, "tag", 0)
-        type_name = getattr(getattr(unit, "type_id", None), "name", "") or ""
-        orders |= _order_ability_names(unit)
-        if only_tags is not None and type_name in entry.valid_issuers and tag not in only_tags:
-            continue
-        owned.append(
-            cat.Owned(
-                type_name=type_name, tag=tag, ready=bool(getattr(unit, "is_ready", True)),
-                idle=bool(getattr(unit, "is_idle", True)), addon=_addon_kind(unit, techlabs, reactors),
-                is_structure=bool(getattr(unit, "is_structure", False)),
-            )
-        )
-    done = frozenset(getattr(up, "name", str(up)) for up in getattr(bot.state, "upgrades", ()) or ())
-    pending = frozenset(
-        name
-        for research in cat.commands_by_category("research")
-        for name, ability in zip(research.upgrades, research.upgrade_abilities)
-        if ability in orders
-    )
+    from starcraft_commander.sc2_catalog_state import build_catalog_state
 
-    def can_afford(kind: str, name: str) -> bool | None:
-        upgrade = UpgradeId.__members__.get(name) if kind == "upgrade" else None
-        return None if upgrade is None else bool(bot.can_afford(upgrade))
-
-    return cat.CatalogState(
-        owned=tuple(owned), upgrades_done=done, upgrades_pending=pending,
-        minerals=getattr(bot, "minerals", None), vespene=getattr(bot, "vespene", None), can_afford=can_afford,
-    )
+    state = build_catalog_state(bot)
+    if only_tags is None:
+        return state
+    keep = tuple(o for o in state.owned if o.type_name not in entry.valid_issuers or o.tag in only_tags)
+    return replace(state, owned=keep)
 
 
 def _route_from_python_sc2(upgrade_name: str) -> tuple[str, str] | None:
@@ -174,7 +131,7 @@ def resolve_research(subject: str, bot: Any, *, only_tags: frozenset[int] | None
         # No UpgradeId exists (HighCapacityFuelTanks: header ability 804 only): done/level cannot be known; an order
         # already running for the button is the only duplicate that can be detected.
         ability_name = next(iter(entry.abilities.values()))
-        if any(ability_name in _order_ability_names(u) for u in _structures(bot)):
+        if any(ability_name in order_ability_names(u) for u in _structures(bot)):
             return _refuse(entry.id, "research_already_pending")
     if not pinned:
         _, progress = cat.upgrade_progress_name(entry, state)
@@ -228,7 +185,7 @@ def _alternative_route(entry: cat.CommandEntry, pinned: str, state: cat.CatalogS
         return None
     from sc2.ids.ability_id import AbilityId
 
-    if any(ability_name in _order_ability_names(u) for u in _structures(bot)):
+    if any(ability_name in order_ability_names(u) for u in _structures(bot)):
         return _refuse(entry.id, "research_already_pending")
     if state.can_afford is not None and state.can_afford("upgrade", upgrade) is False:
         return _refuse(entry.id, "unaffordable")
