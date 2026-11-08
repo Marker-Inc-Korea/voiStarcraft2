@@ -9,6 +9,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
@@ -18,6 +20,16 @@ import intent_catalog as C  # noqa: E402
 
 API = json.loads((HERE.parents[1] / "scripts/sc2_accuracy/s2client_api_enums.json").read_text(encoding="utf-8"))
 TERRAN_API_NAMES = {n for u, a in API["unit_abilities"].items() if u.startswith("TERRAN_") for n in a}
+
+
+# CI installs without the `sc2` extra: the gold derivation reads python-sc2 data (TRAIN_INFO, RESEARCH_INFO, UpgradeId).
+try:
+    import sc2.dicts.unit_research_abilities  # noqa: F401
+
+    _HAS_SC2 = True
+except ImportError:
+    _HAS_SC2 = False
+needs_sc2 = pytest.mark.skipif(not _HAS_SC2, reason="python-sc2 (burnysc2) is not installed; gold derivation reads its data")
 
 
 def test_catalog_has_the_103_terran_commands_by_category():
@@ -30,15 +42,18 @@ def test_catalog_has_the_103_terran_commands_by_category():
     assert set(cat) <= TERRAN_API_NAMES
 
 
+@needs_sc2
 def test_gold_derivation_is_deterministic():
     assert B.build_rows() == B.build_rows()
 
 
+@needs_sc2
 def test_committed_corpus_equals_regenerated_corpus():
     on_disk = [json.loads(line) for line in B.CORPUS_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert on_disk == B.build_rows()
 
 
+@needs_sc2
 def test_every_gold_command_exists_in_the_api_data():
     for row in B.build_rows():
         for cmd in row["gold"]["acceptable"]:
@@ -52,6 +67,7 @@ def test_every_gold_command_exists_in_the_api_data():
             assert exact in row["gold"]["acceptable"], row["id"]
 
 
+@needs_sc2
 def test_corpus_shape_and_tiers():
     rows = B.build_rows()
     assert len(rows) >= 200
@@ -65,6 +81,7 @@ def test_corpus_shape_and_tiers():
     assert sum(r["lang"] != "ko" for r in rows) >= 20
 
 
+@needs_sc2
 def test_every_catalog_category_is_reachable_by_some_row():
     seen = set()
     for row in B.build_rows():
@@ -77,6 +94,7 @@ def _state(structures, researched=()):
     return {"structures": list(structures), "researched": list(researched), "minerals": 2000, "gas": 2000, "energy": 100}
 
 
+@needs_sc2
 def test_multilevel_upgrade_resolves_the_next_unresearched_level_from_state():
     sel = {"commands": ["RESEARCH_TERRANINFANTRYWEAPONS"]}
     base = ["ENGINEERINGBAY", "ARMORY"]
@@ -87,12 +105,14 @@ def test_multilevel_upgrade_resolves_the_next_unresearched_level_from_state():
     assert two["acceptable"] == ["RESEARCH_TERRANINFANTRYWEAPONS#3"]
 
 
+@needs_sc2
 def test_fully_researched_family_has_nothing_to_execute():
     full = _state(["ENGINEERINGBAY", "ARMORY"], [f"TERRANINFANTRYWEAPONSLEVEL{i}" for i in (1, 2, 3)])
     out = C.resolve({"commands": ["RESEARCH_TERRANINFANTRYWEAPONS"]}, full)
     assert out["expect"] == "ask" and out["acceptable"] == []
 
 
+@needs_sc2
 def test_level_two_without_armory_asks_or_builds_the_armory():
     st = _state(["ENGINEERINGBAY", "FACTORY"], ["TERRANINFANTRYWEAPONSLEVEL1"])  # next missing step = the Armory
     out = C.resolve({"commands": ["RESEARCH_TERRANINFANTRYWEAPONS"]}, st)
@@ -100,6 +120,7 @@ def test_level_two_without_armory_asks_or_builds_the_armory():
     assert out["acceptable"] == ["BUILD_ARMORY"]
 
 
+@needs_sc2
 def test_missing_research_building_asks_or_builds_it():
     out = C.resolve({"commands": ["RESEARCH_STIMPACK"]}, _state(["BARRACKS"]))
     assert out["expect"] == "choose_or_ask"
@@ -108,12 +129,14 @@ def test_missing_research_building_asks_or_builds_it():
     assert ok["expect"] == "execute" and ok["acceptable"] == ["RESEARCH_STIMPACK"] and ok["exact"] == "RESEARCH_STIMPACK"
 
 
+@needs_sc2
 def test_already_researched_single_upgrade_is_not_executable():
     st = _state(["BARRACKS", "BARRACKSTECHLAB"], ["STIMPACK"])
     out = C.resolve({"commands": ["RESEARCH_STIMPACK"]}, st)
     assert out["expect"] == "ask" and out["acceptable"] == []
 
 
+@needs_sc2
 def test_set_selector_collects_every_available_member():
     st = _state(["ENGINEERINGBAY", "ARMORY"], ["TERRANINFANTRYWEAPONSLEVEL1"])
     out = C.resolve({"commands": ["RESEARCH_TERRANINFANTRYWEAPONS", "RESEARCH_TERRANINFANTRYARMOR"]}, st)
@@ -121,6 +144,7 @@ def test_set_selector_collects_every_available_member():
     assert out["exact"] is None and out["expect"] == "execute"
 
 
+@needs_sc2
 def test_caster_unspecified_lists_every_ground_caster_and_specified_one():
     st = _state(["BARRACKS", "FACTORY", "STARPORT"])
     anyc = C.resolve({"commands": ["BUILD_TECHLAB"]}, st)
@@ -129,6 +153,7 @@ def test_caster_unspecified_lists_every_ground_caster_and_specified_one():
     assert one["acceptable"] == ["BUILD_TECHLAB@FACTORY"] and one["exact"] == "BUILD_TECHLAB@FACTORY"
 
 
+@needs_sc2
 def test_train_prerequisites_come_from_python_sc2_train_info():
     no_lab = C.resolve({"commands": ["TRAIN_SIEGETANK"]}, _state(["FACTORY"]))
     assert no_lab["expect"] == "choose_or_ask" and no_lab["acceptable"] == ["BUILD_TECHLAB@FACTORY"]
@@ -136,6 +161,7 @@ def test_train_prerequisites_come_from_python_sc2_train_info():
     assert ok["expect"] == "execute" and ok["exact"] == "TRAIN_SIEGETANK"
 
 
+@needs_sc2
 def test_effect_needs_energy_from_the_adapter_cost_table():
     low = {**_state(["ORBITALCOMMAND"]), "energy": 20}
     out = C.resolve({"commands": ["EFFECT_SCAN"]}, low)

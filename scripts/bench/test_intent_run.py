@@ -6,6 +6,11 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+# The runner resolves research commands through python-sc2 data at import time; CI installs without the `sc2` extra.
+pytest.importorskip("sc2.dicts.unit_research_abilities")
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[1]))
