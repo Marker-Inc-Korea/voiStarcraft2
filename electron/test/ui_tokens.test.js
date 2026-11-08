@@ -49,7 +49,7 @@ test("every border-radius is a token, a circle, or a >= 6px value", () => {
 
 test("interactive surfaces (buttons, inputs, cards, rows, chips) use rounded tokens, never a bare small px radius", () => {
   const hud = stripComments(SURFACES["renderer/style.css"]), board = stripComments(SURFACES["board/board.css"]);
-  for (const selector of [".em {", ".gear {", ".cmd-form input {", ".btn {", ".switch {", ".tabs button {", ".transcript {", ".ops {"]) {
+  for (const selector of [".gear {", ".cmd-form input {", ".btn {", ".switch {", ".tabs button {", ".transcript {", ".ops {"]) {
     const rule = hud.slice(hud.indexOf(selector), hud.indexOf("}", hud.indexOf(selector)));
     assert.match(rule, /border-radius: (var\(--radius-(md|lg|xl|pill)\)|50%)/, selector);
   }

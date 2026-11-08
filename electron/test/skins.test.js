@@ -29,8 +29,8 @@ test("emergency shortcut settings: defaults Cmd/Ctrl+Shift+R/H/X, valid accelera
   assert.equal(S.validatePatch({ emergency: { hold: "CommandOrControl+Alt+H" } }).emergency.hold, "CommandOrControl+Alt+H");
   for (const bad of ["", "R", "Shift", "CommandOrControl+Shift+Nope", 5]) assert.throws(() => S.validatePatch({ emergency: { stop: bad } }), /emergency\.stop/, String(bad));
   assert.equal(S.sanitizeStored({ emergency: { retreat: "bad" } }).emergency.retreat, "CommandOrControl+Shift+R");
-  for (const lang of ["ko", "en"]) for (const key of ["tab_emergency", "emergency_retreat", "emergency_hold", "emergency_stop", "hold", "stop", "retreat", "em_nokey"]) assert.ok(I.tables[lang][key], `${lang} ${key}`);
-  assert.equal(I.tables.ko.retreat, "후퇴"); assert.equal(I.tables.ko.hold, "홀드"); assert.equal(I.tables.ko.stop, "멈춰");
+  for (const lang of ["ko", "en"]) for (const key of ["tab_emergency", "emergency_retreat", "emergency_hold", "emergency_stop", "em_nokey"]) assert.ok(I.tables[lang][key], `${lang} ${key}`);
+  for (const lang of ["ko", "en"]) for (const key of ["hold", "stop", "retreat", "em_sent", "em_failed"]) assert.equal(I.tables[lang][key], undefined, `${lang} ${key} belonged to the removed HUD buttons`);
 });
 test("terminal skin stays legible at the lowest opacity: scrim/legible/glow grow as the panel gets clearer", () => {
   const clear = K.legibility("terminal", 0.08), solid = K.legibility("terminal", 0.9);

@@ -31,8 +31,13 @@ TERRAN_TECH_REQUIREMENTS: Final[dict[str, str]] = {
     "SENSORTOWER": "ENGINEERINGBAY",
 }
 
+# Absent from burnysc2 ``TERRAN_TECH_REQUIREMENT`` (so kept out of the table above, which a test pins to it), but
+# python-sc2 ``TRAIN_INFO[SCV][ENGINEERINGBAY]['required_building']`` names the Command Center (any townhall form).
+TERRAN_EXTRA_TECH_REQUIREMENTS: Final[dict[str, str]] = {"ENGINEERINGBAY": "COMMANDCENTER"}
+
 # Structure type names that satisfy a requirement for ``key`` (python-sc2 EQUIVALENTS_FOR_TECH_PROGRESS + morphs).
 TERRAN_TECH_EQUIVALENTS: Final[dict[str, frozenset[str]]] = {
+    "COMMANDCENTER": frozenset({"COMMANDCENTER", "ORBITALCOMMAND", "PLANETARYFORTRESS", "COMMANDCENTERFLYING", "ORBITALCOMMANDFLYING"}),
     "SUPPLYDEPOT": frozenset({"SUPPLYDEPOT", "SUPPLYDEPOTLOWERED", "SUPPLYDEPOTDROP"}),
     "BARRACKS": frozenset({"BARRACKS", "BARRACKSFLYING"}),
     "FACTORY": frozenset({"FACTORY", "FACTORYFLYING"}),
@@ -40,6 +45,7 @@ TERRAN_TECH_EQUIVALENTS: Final[dict[str, frozenset[str]]] = {
 }
 
 TERRAN_TECH_REQUIREMENT_KOREAN: Final[dict[str, str]] = {
+    "COMMANDCENTER": "사령부",
     "SUPPLYDEPOT": "보급고",
     "BARRACKS": "병영",
     "FACTORY": "군수공장",
@@ -54,7 +60,8 @@ TERRAN_TECH_REQUIREMENT_KOREAN: Final[dict[str, str]] = {
 def required_structure(subject: str) -> str:
     """The structure ``subject`` (a unit or structure type name) needs, or ``""``."""
 
-    return TERRAN_TECH_REQUIREMENTS.get(str(subject or "").strip().upper().removeprefix("TERRAN_"), "")
+    name = str(subject or "").strip().upper().removeprefix("TERRAN_")
+    return TERRAN_TECH_REQUIREMENTS.get(name) or TERRAN_EXTRA_TECH_REQUIREMENTS.get(name, "")
 
 
 def satisfying_types(required: str) -> frozenset[str]:

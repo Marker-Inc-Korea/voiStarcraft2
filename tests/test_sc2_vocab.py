@@ -242,7 +242,7 @@ def test_two_independent_builds_are_one_scv_with_the_second_queued() -> None:
     plan = direct_build_plan("서플 짓고 다음에 정제소", bt("TERRAN_SUPPLYDEPOT", anchor="self_main"), bt("TERRAN_ENGINEERINGBAY", queue=True, anchor="self_main"))
     assert [a.queue for a in plan.ordered_actions] == [False, True]
     assert all(a.action_type is SC2ActionType.BUILD_STRUCTURE for a in plan.ordered_actions)
-    bot = harness.make_bot((U.SCV, 3))
+    bot = harness.make_bot((U.SCV, 3), (U.COMMANDCENTER, 1))  # the Engineering Bay needs a Command Center
     result, views = run(bot, *plan.ordered_actions)
     assert [v["queue"] for v in views] == [False, True], reports(result)
     assert len(tags_of(views)) == 1, "a queued build continues on the SAME SCV"

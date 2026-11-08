@@ -52,6 +52,9 @@ def _remap_kinds() -> dict[int, str]:
         kind = ABILITY_TARGET_KIND.get(ability["id"])
         if remap and kind and remap not in ABILITY_TARGET_KIND:
             out.setdefault(remap, kind)
+        # A header-less id that remaps to a header-listed general id (36 -> 3688 HoldFireOn) inherits the general id's kind.
+        if remap and kind is None and ABILITY_TARGET_KIND.get(remap):
+            out.setdefault(ability["id"], ABILITY_TARGET_KIND[remap])
     return out
 
 

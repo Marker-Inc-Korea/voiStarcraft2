@@ -128,6 +128,8 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
             bot.add_unit(U.MARINE, x=21.0, y=21.0)
         if token == "medivac_heal":
             bot.add_unit(U.MARINE, x=21.0, y=21.0, health=5.0, health_max=45.0)
+        if token == "command_center_load_all":  # Load All needs SCVs in range (LoadAllNoTargetsFound otherwise)
+            bot.add_unit(U.SCV, x=21.0, y=21.0)
         if mode == "own_cargo":
             bot.add_unit(U.MARINE, x=21.0, y=21.0)
         if token == "medivac_unload_all":

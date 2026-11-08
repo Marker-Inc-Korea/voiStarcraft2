@@ -433,7 +433,7 @@ TERRAN_COMMAND_FACTS: Final[tuple[dict[str, Any], ...]] = tuple([{'id': 'behavio
   'header_id': 32,
   'header_target': 'None',
   'issuers': ('BUNKER',),
-  'abilities': {'BUNKER': 'SALVAGEEFFECT_SALVAGE'},
+  'abilities': {'BUNKER': 'EFFECT_SALVAGE'},
   'not_in_python_sc2_unit_abilities': (),
   'upgrades': (),
   'upgrade_abilities': (),

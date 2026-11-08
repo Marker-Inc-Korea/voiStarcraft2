@@ -63,8 +63,9 @@ description_ko, effect, energy_cost, produces, upgrades (levels), upgrade_requir
   (`NeosteelFrame`, `CycloneRapidFireLaunchers`, `RavenCorvidReactor`, `RavenRecalibratedExplosives`,
   `RavenEnhancedMunitions`, `AdvancedBallistics`, `HighCapacityFuelTanks`); the upgrade ids come from stableid.json names
   (`EXTRA_UPGRADES` in the generator) and `HighCapacityFuelTanks` has NO upgrade id in stableid.json, so it cannot be
-  tracked as done/pending. burnysc2 lists `SALVAGEEFFECT_SALVAGE` (4128) for the Bunker while the 2019 header says
-  `EFFECT_SALVAGE` (32); the catalog sends the burnysc2 member and flags 13 (command, issuer) rows as
+  tracked as done/pending. burnysc2 lists `SALVAGEEFFECT_SALVAGE` (4128) for the Bunker, but stableid.json names id 4128
+  `MothershipCloak`, so the catalog sends the header-documented generic `EFFECT_SALVAGE` (32, Target None): *generic id;
+  live remap unconfirmed*. 13 (command, issuer) rows are flagged as
   `not_in_python_sc2_unit_abilities` (header says the unit has it; burnysc2's per-unit table does not).
 
 ## What only a live SC2 can confirm
@@ -85,8 +86,8 @@ description_ko, effect, energy_cost, produces, upgrades (levels), upgrade_requir
 |--:|----|----------|------------------------|--------|-------|-----------------------|----------------|
 | 1 | `behavior_cloakoff` | behavior | BANSHEE -> BEHAVIOR_CLOAKOFF_BANSHEE<br>GHOST -> BEHAVIOR_CLOAKOFF_GHOST | none | - | 클로킹 풀어 | BANSHEE: sent<br>GHOST: sent |
 | 2 | `behavior_cloakon` | behavior | BANSHEE -> BEHAVIOR_CLOAKON_BANSHEE<br>GHOST -> BEHAVIOR_CLOAKON_GHOST | none | energy 25 | 클로킹 | BANSHEE: sent<br>GHOST: sent |
-| 3 | `behavior_holdfireoff` | behavior | GHOST -> BEHAVIOR_HOLDFIREOFF_GHOST | none | - | 사격 재개 | GHOST: refused: unresolvable_ability |
-| 4 | `behavior_holdfireon` | behavior | GHOST -> BEHAVIOR_HOLDFIREON_GHOST | none | - | 사격 중지 | GHOST: refused: unresolvable_ability |
+| 3 | `behavior_holdfireoff` | behavior | GHOST -> BEHAVIOR_HOLDFIREOFF_GHOST | none | - | 사격 재개 | GHOST: sent |
+| 4 | `behavior_holdfireon` | behavior | GHOST -> BEHAVIOR_HOLDFIREON_GHOST | none | - | 사격 중지 | GHOST: sent |
 | 5 | `build_armory` | build | SCV -> TERRANBUILD_ARMORY | point | 군수공장 | 무기고 지어 | SCV: sent |
 | 6 | `build_barracks` | build | SCV -> TERRANBUILD_BARRACKS | point | 보급고 | 병영 지어 | SCV: sent |
 | 7 | `build_bunker` | build | SCV -> TERRANBUILD_BUNKER | point | 병영 | 벙커 지어 | SCV: sent |
@@ -110,25 +111,25 @@ description_ko, effect, energy_cost, produces, upgrades (levels), upgrade_requir
 | 25 | `effect_emp` | effect | GHOST -> EMP_EMP | point (적 위치) | energy 75 | EMP | GHOST: sent |
 | 26 | `effect_ghostsnipe` | effect | GHOST -> EFFECT_GHOSTSNIPE | unit (적 유닛) | energy 50 | 저격 | GHOST: sent |
 | 27 | `effect_heal` | effect | MEDIVAC -> MEDIVACHEAL_HEAL | unit (부상 아군 생체 유닛) | - | 치료 | MEDIVAC: sent |
-| 28 | `effect_hunterseekermissile` | effect | RAVEN -> SEEKERMISSILE_HUNTERSEEKERMISSILE | unit (적 유닛) | - | 추적 미사일 | RAVEN: refused: unresolvable_ability |
+| 28 | `effect_hunterseekermissile` | effect | RAVEN -> SEEKERMISSILE_HUNTERSEEKERMISSILE | unit (적 유닛) | - | 추적 미사일 | RAVEN: sent |
 | 29 | `effect_kd8charge` | effect | REAPER -> KD8CHARGE_KD8CHARGE | point_or_unit (적 유닛/위치) | - | KD8 | REAPER: sent |
 | 30 | `effect_lockon` | effect | CYCLONE -> LOCKON_LOCKON | unit (적 유닛) | - | 락온 | CYCLONE: sent |
 | 31 | `effect_medivacigniteafterburners` | effect | MEDIVAC -> EFFECT_MEDIVACIGNITEAFTERBURNERS | none | - | 부스터 | MEDIVAC: sent |
 | 32 | `effect_nukecalldown` | effect | GHOST -> TACNUKESTRIKE_NUKECALLDOWN | point (핵 투하 위치) | - | 핵 발사 | GHOST: sent |
-| 33 | `effect_pointdefensedrone` | effect | RAVEN -> PLACEPOINTDEFENSEDRONE_POINTDEFENSEDRONE | point (설치 위치) | - | 방어 드론 | RAVEN: refused: unresolvable_ability |
+| 33 | `effect_pointdefensedrone` | effect | RAVEN -> PLACEPOINTDEFENSEDRONE_POINTDEFENSEDRONE | point (설치 위치) | - | 방어 드론 | RAVEN: sent |
 | 34 | `effect_repair` | effect | MULE -> EFFECT_REPAIR_MULE<br>SCV -> EFFECT_REPAIR_SCV | unit (손상된 아군 대상) | - | 수리 | MULE: sent<br>SCV: sent |
-| 35 | `effect_salvage` | effect | BUNKER -> SALVAGEEFFECT_SALVAGE | none | - | 벙커 해체 | BUNKER: refused: unresolvable_ability |
+| 35 | `effect_salvage` | effect | BUNKER -> EFFECT_SALVAGE | none | - | 벙커 해체 | BUNKER: sent |
 | 36 | `effect_scan` | effect | ORBITALCOMMAND -> SCANNERSWEEP_SCAN | point (스캔 위치) | energy 50 | 스캔 | ORBITALCOMMAND: sent |
-| 37 | `effect_spray` | effect | SCV -> EFFECT_SPRAY_TERRAN | point (스프레이 위치) | - | 스프레이 | SCV: refused: unresolvable_ability |
-| 38 | `effect_stim` | effect | BUNKER -> EFFECT_STIM<br>MARAUDER -> EFFECT_STIM_MARAUDER<br>MARINE -> EFFECT_STIM_MARINE | none | - | 스팀팩 | BUNKER: refused: unresolvable_ability<br>MARAUDER: sent<br>MARINE: sent |
+| 37 | `effect_spray` | effect | SCV -> EFFECT_SPRAY_TERRAN | point (스프레이 위치) | - | 스프레이 | SCV: sent |
+| 38 | `effect_stim` | effect | BUNKER -> EFFECT_STIM<br>MARAUDER -> EFFECT_STIM_MARAUDER<br>MARINE -> EFFECT_STIM_MARINE | none | - | 스팀팩 | BUNKER: sent<br>MARAUDER: sent<br>MARINE: sent |
 | 39 | `effect_supplydrop` | effect | ORBITALCOMMAND -> SUPPLYDROP_SUPPLYDROP | unit (보급고) | energy 50 | 보급 드롭 | ORBITALCOMMAND: sent |
 | 40 | `effect_tacticaljump` | effect | BATTLECRUISER -> EFFECT_TACTICALJUMP | point (도약 위치) | - | 전술 도약 | BATTLECRUISER: sent |
-| 41 | `effect_widowmineattack` | effect | WIDOWMINEBURROWED -> WIDOWMINEATTACK_WIDOWMINEATTACK | unit (적 유닛) | - | 지뢰 발사 | WIDOWMINEBURROWED: refused: unresolvable_ability |
+| 41 | `effect_widowmineattack` | effect | WIDOWMINEBURROWED -> WIDOWMINEATTACK_WIDOWMINEATTACK | unit (적 유닛) | - | 지뢰 발사 | WIDOWMINEBURROWED: sent |
 | 42 | `effect_yamatogun` | effect | BATTLECRUISER -> YAMATO_YAMATOGUN | unit (적 유닛) | - | 야마토 | BATTLECRUISER: sent |
 | 43 | `land` | other | BARRACKSFLYING -> LAND_BARRACKS<br>COMMANDCENTERFLYING -> LAND_COMMANDCENTER<br>FACTORYFLYING -> LAND_FACTORY<br>ORBITALCOMMANDFLYING -> LAND_ORBITALCOMMAND<br>STARPORTFLYING -> LAND_STARPORT | point (착륙 위치) | - | 착륙 | BARRACKSFLYING: sent<br>COMMANDCENTERFLYING: sent<br>FACTORYFLYING: sent<br>ORBITALCOMMANDFLYING: sent<br>STARPORTFLYING: sent |
 | 44 | `lift` | other | BARRACKS -> LIFT_BARRACKS<br>COMMANDCENTER -> LIFT_COMMANDCENTER<br>FACTORY -> LIFT_FACTORY<br>ORBITALCOMMAND -> LIFT_ORBITALCOMMAND<br>STARPORT -> LIFT_STARPORT | none | - | 이륙 | BARRACKS: sent<br>COMMANDCENTER: sent<br>FACTORY: sent<br>ORBITALCOMMAND: sent<br>STARPORT: sent |
-| 45 | `load` | other | BUNKER -> LOAD_BUNKER<br>MEDIVAC -> LOAD_MEDIVAC | unit (태울 아군 유닛) | - | 태워 | BUNKER: refused: unresolvable_ability<br>MEDIVAC: sent |
-| 46 | `loadall` | other | COMMANDCENTER -> LOADALL_COMMANDCENTER<br>COMMANDCENTERFLYING -> LOADALL_COMMANDCENTER<br>PLANETARYFORTRESS -> LOADALL_COMMANDCENTER | none | - | 사령부에 일꾼 넣어 | COMMANDCENTER: refused: unresolvable_ability<br>COMMANDCENTERFLYING: refused: unresolvable_ability<br>PLANETARYFORTRESS: refused: unresolvable_ability |
+| 45 | `load` | other | BUNKER -> LOAD_BUNKER<br>MEDIVAC -> LOAD_MEDIVAC | unit (태울 아군 유닛) | - | 태워 | BUNKER: sent<br>MEDIVAC: sent |
+| 46 | `loadall` | other | COMMANDCENTER -> LOADALL_COMMANDCENTER<br>COMMANDCENTERFLYING -> LOADALL_COMMANDCENTER<br>PLANETARYFORTRESS -> LOADALL_COMMANDCENTER | none | - | 사령부에 일꾼 넣어 | COMMANDCENTER: sent<br>COMMANDCENTERFLYING: sent<br>PLANETARYFORTRESS: sent |
 | 47 | `morph_hellbat` | morph | HELLION -> MORPH_HELLBAT | none | - | 화염기갑병으로 | HELLION: sent |
 | 48 | `morph_hellion` | morph | HELLIONTANK -> MORPH_HELLION | none | - | 화염차로 | HELLIONTANK: sent |
 | 49 | `morph_liberatoraamode` | morph | LIBERATORAG -> MORPH_LIBERATORAAMODE | none | - | 해방선 전투기 모드 | LIBERATORAG: sent |
@@ -184,9 +185,9 @@ description_ko, effect, energy_cost, produces, upgrades (levels), upgrade_requir
 | 99 | `train_thor` | train | FACTORY -> FACTORYTRAIN_THOR | none | Tech Lab, 무기고 | 토르 뽑아 | FACTORY: sent |
 | 100 | `train_vikingfighter` | train | STARPORT -> STARPORTTRAIN_VIKINGFIGHTER | none | - | 바이킹 뽑아 | STARPORT: sent |
 | 101 | `train_widowmine` | train | FACTORY -> FACTORYTRAIN_WIDOWMINE | none | - | 지뢰 뽑아 | FACTORY: sent |
-| 102 | `unloadall` | other | BUNKER -> UNLOADALL_BUNKER<br>COMMANDCENTER -> UNLOADALL_COMMANDCENTER<br>COMMANDCENTERFLYING -> UNLOADALL | none | - | 전부 내려 | BUNKER: refused: unresolvable_ability<br>COMMANDCENTER: refused: unresolvable_ability<br>COMMANDCENTERFLYING: refused: unresolvable_ability |
-| 103 | `unloadallat` | other | MEDIVAC -> UNLOADALLAT_MEDIVAC | point_or_unit (하차 위치) | - | 의료선 내려 | MEDIVAC: refused: no_ready_caster: no_cargo_to_unload |
+| 102 | `unloadall` | other | BUNKER -> UNLOADALL_BUNKER<br>COMMANDCENTER -> UNLOADALL_COMMANDCENTER<br>COMMANDCENTERFLYING -> UNLOADALL | none | - | 전부 내려 | BUNKER: sent<br>COMMANDCENTER: sent<br>COMMANDCENTERFLYING: sent |
+| 103 | `unloadallat` | other | MEDIVAC -> UNLOADALLAT_MEDIVAC | point_or_unit (하차 위치) | - | 의료선 내려 | MEDIVAC: sent |
 
-Offline status summary: **88 of 127 (command, issuer) pairs sent**; 70 of 103 commands sent for at least one issuer.
+Offline status summary: **104 of 127 (command, issuer) pairs sent**; 80 of 103 commands sent for at least one issuer.
 
 <!-- END GENERATED TABLE -->

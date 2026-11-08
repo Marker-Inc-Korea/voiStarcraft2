@@ -60,12 +60,11 @@ def _resolve_issuer_ability(sc2: dict[str, Any], issuer: str, header_id: int, he
         for member in sorted(sc2["UNIT_ABILITIES"].get(unit, ()), key=lambda m: m.name):
             if member.value == header_id or (generic.get(member) is not None and generic[member].value == header_id):
                 return member.name
-    # The newer game data renamed the Bunker's salvage (header EFFECT_SALVAGE 32; burnysc2 lists SALVAGEEFFECT_SALVAGE
-    # 4128 for the Bunker).  burnysc2's per-unit table is what the bot actually addresses, so prefer it.
-    if unit is not None and header_name == "EFFECT_SALVAGE":
-        for member in sc2["UNIT_ABILITIES"].get(unit, ()):
-            if member.name == "SALVAGEEFFECT_SALVAGE":
-                return member.name
+    # burnysc2 lists SALVAGEEFFECT_SALVAGE (4128) for the Bunker, but the local stableid.json names id 4128
+    # "MothershipCloak" (SalvageEffect is 4131), so that id is not a Bunker salvage in the shipped game data.  The
+    # s2client-api header documents EFFECT_SALVAGE (32, Target None): send that generic id.
+    if unit is not None and header_name == "EFFECT_SALVAGE" and getattr(ability_id, "EFFECT_SALVAGE", None) is not None:
+        return "EFFECT_SALVAGE"
     # Header lists it, python-sc2's per-unit table does not: look for an issuer-suffixed exact member.
     for member in ability_id:
         remap = generic.get(member)
