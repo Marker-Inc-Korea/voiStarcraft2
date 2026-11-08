@@ -382,6 +382,19 @@ def resolve_catalog_call(
     return result
 
 
+# --------------------------------------------------------------------------- V1 prompt listing
+
+
+def catalog_listing() -> str:
+    """Compact ``category: id=말; ...`` list of every catalog command for the V1 prompt (derived, never hand-kept)."""
+
+    lines = []
+    for category in cat.CATEGORIES:
+        items = [f"{e.id}={e.aliases_ko[0]}" for e in cat.commands_by_category(category)]
+        lines.append(f"{category}: " + "; ".join(items))
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- lowering
 
 
