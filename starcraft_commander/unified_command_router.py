@@ -37,6 +37,7 @@ from starcraft_commander.direct_command_lifecycle import (
 )
 from starcraft_commander.direct_binding import bind_plan_actions
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
+from starcraft_commander.sc2_production import UNIT_SUBJECT_ALIASES
 from starcraft_commander.terran_prerequisites import required_structure
 from starcraft_commander.sc2_api_inventory import inspect_python_sc2_surface
 from starcraft_commander.policy_modulation import (
@@ -755,10 +756,11 @@ def _append_task_actions(
                 return
             if task_type == "warp_in" and not target:
                 return
-            subject = _direct_unit_subject(production_targets[0])
+            subject = UNIT_SUBJECT_ALIASES.get(_direct_unit_subject(production_targets[0]), _direct_unit_subject(production_targets[0]))
             action_metadata.setdefault(
                 "producer",
                 {
+                    "HELLIONTANK": "FACTORY",
                     "SCV": "COMMANDCENTER",
                     "MARINE": "BARRACKS",
                     "MARAUDER": "BARRACKS",

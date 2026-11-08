@@ -44,6 +44,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
+from starcraft_commander.sc2_production import PRODUCTION_ABILITIES, STRUCTURE_CASTER_TOKENS
 from starcraft_commander.terran_prerequisites import required_structure, satisfying_types
 from starcraft_commander.sc2_action_results import SUCCESS_CODE as SUCCESS_RESULT_CODE
 from starcraft_commander.sc2_action_results import GameResultTracker
@@ -265,6 +266,7 @@ _LEADING_COUNT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s*(\d+)")
 # header (3747 interference matrix, 3753 anti-armor missile) have an
 # INFERRED target kind; the audit reports them as header-unverified.
 SC2_SEMANTIC_ABILITIES: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = {
+    **PRODUCTION_ABILITIES,
     "stimpack": ("EFFECT_STIM", "none", ("MARINE", "MARAUDER")),
     "marine_stimpack": ("EFFECT_STIM_MARINE", "none", ("MARINE",)),
     "marauder_stimpack": ("EFFECT_STIM_MARAUDER", "none", ("MARAUDER",)),
@@ -325,7 +327,7 @@ _TYPE_SPECIFIC_ABILITIES: Final[dict[str, dict[str, str]]] = {
 }
 # Abilities whose casters are STRUCTURES (python-sc2 keeps them in ``bot.structures``, flying ones possibly in units).
 _STRUCTURE_CASTER_TOKENS: Final[frozenset[str]] = frozenset(
-    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"}
+    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"} | STRUCTURE_CASTER_TOKENS
 )
 _ORBITAL_TOKENS: Final[frozenset[str]] = frozenset({"scanner_sweep", "calldown_mule", "supply_drop"})
 _SUPPLY_DEPOT_TYPES: Final[frozenset[str]] = frozenset({"SUPPLYDEPOT", "SUPPLYDEPOTLOWERED"})
@@ -589,7 +591,7 @@ class PythonSC2BotAdapter:
         if not parents:
             if is_addon and any(_entity_type_name(c) == parent_name and _has_any_addon(c) for c in candidates):
                 return _refusal_report(1, f"{parent_name.lower()}_already_has_addon")
-            return _refusal_report(1, f"no_ready_idle_{parent_name.lower()}")
+            return _refusal_report(1, "no_ready_idle_producer")
         morph_type = self._morph_result_type(action)
         if morph_type is not None and not await self._is_affordable(morph_type):
             return _refusal_report(1, self._unaffordable_reason(morph_type))
@@ -758,7 +760,7 @@ class PythonSC2BotAdapter:
             # python-sc2 silently select a different SCV after observation
             # reorder, defeating concrete tag ownership.
             if not pinned_builders:
-                detail = "pinned_builder_missing"
+                detail = "insufficient_workers"
                 return _refusal_report(
                     1,
                     detail,
@@ -773,7 +775,7 @@ class PythonSC2BotAdapter:
             builder = pinned_builders[0]
             build_order = getattr(builder, "build", None)
             if not callable(build_order):
-                detail = "missing_pinned_builder_capability"
+                detail = "insufficient_workers"
                 return _refusal_report(
                     1,
                     detail,
@@ -850,9 +852,10 @@ class PythonSC2BotAdapter:
         for worker in workers:
             build_gas = getattr(worker, "build_gas", None)
             if callable(build_gas):
-                return await self._issue_unit_order(build_gas, geyser)
+                applied = await self._issue_unit_order(build_gas, geyser)
+                return _issuance_report(1, 1 if applied else 0, "build_refused")
         if "_direct_unit_tags" in action.metadata:
-            return _refusal_report(1, "missing_pinned_builder_capability")
+            return _refusal_report(1, "insufficient_workers")
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
@@ -4157,7 +4160,7 @@ def _caster_blockers(token: str, unit: object) -> tuple[str, ...]:
     if token in _STRUCTURE_CASTER_TOKENS:
         if not _truthy_flag(unit, "is_ready", default=True):
             blockers.append("under_construction")
-        elif token == "lift_off" and not _truthy_flag(unit, "is_idle", default=True):
+        elif token in {"lift_off", "arm_nuke"} and not _truthy_flag(unit, "is_idle", default=True):
             # Lift Off is refused while the structure is training/researching (its queue must be empty).
             blockers.append("structure_busy")
     if type_name == "MEDIVAC":
