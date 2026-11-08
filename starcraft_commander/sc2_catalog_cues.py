@@ -20,11 +20,11 @@ _NOT_RESEARCH = "-연구|개발|업그레이드|업글|research|upgrade"
 CUES: Final[dict[str, tuple[str, ...]]] = {
     # ------------------------------------------------------------------ research (24)
     "research_terraninfantryweapons": (
-        "보병+공격|공업|데미지|화력", "공업", "해병+공격력+올|업|강화", "infantry+weapon|attack|damage", "bio+damage|attack|weapon",
+        "보병+공격|공업|데미지|화력|무기|무장", "공업", "해병+공격력+올|업|강화", "infantry+weapon|attack|damage", "bio+damage|attack|weapon",
         "보병+업", "infantry+upgrade", "infantry+upgrade+weapon|attack|damage", "바이오+공격|데미지",
     ),
     "research_terraninfantryarmor": (
-        "보병+방어|방업|아머|맷집|단단", "방업", "해병+방어력+올|업|강화", "infantry+armor", "bio+armor", "보병+업", "infantry+upgrade", "infantry+upgrade+armor",
+        "보병+방어|방업|아머|맷집|단단|방어구", "방업", "해병+방어력+올|업|강화", "infantry+armor", "bio+armor", "보병+업", "infantry+upgrade", "infantry+upgrade+armor",
         "바이오+방어|아머",
     ),
     "research_terranstructurearmorupgrade": (
@@ -35,15 +35,15 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
         "건물+사거리+늘",
     ),
     "research_terranvehicleweapons": (
-        "차량+공격|공업|데미지|화력", "탱크+공격력+올|업|강화", "기계+공격|공업", "메카닉+공업|공격", "vehicle+weapon|attack|damage|upgrade",
+        "차량+공격|공업|데미지|화력|무기|무장", "탱크+공격력+올|업|강화", "기계+공격|공업", "메카닉+공업|공격", "vehicle+weapon|attack|damage|upgrade",
         "mech+attack|damage|weapon", "토르+공격력+올|업", "사이클론+공격력+올|업",
     ),
     "research_terranvehicleandshipplating": (
-        "차량+방어|방업|장갑|아머", "탱크+방어력+올|업|강화", "기계+방어|방업", "메카닉+방업|방어", "vehicle+armor|plating", "mech+armor",
-        "함선+방어|방업|장갑", "공중+방어|방업|장갑",
+        "차량+방어|방업|장갑|아머|방어구", "탱크+방어력+올|업|강화", "기계+방어|방업", "메카닉+방업|방어", "vehicle+armor|plating", "mech+armor",
+        "함선+방어|방업|장갑|방어구", "공중+방어|방업|장갑",
     ),
     "research_terranshipweapons": (
-        "공중+공격력|공업|데미지|화력", "함선+공격|공업|데미지", "항공+공격|공업", "하늘+공격력|공업", "ship+weapon|attack|damage",
+        "공중+공격력|공업|데미지|화력", "함선+공격|공업|데미지|무기|무장", "항공+공격|공업", "하늘+공격력|공업", "ship+weapon|attack|damage",
         "air+weapon|attack|damage|upgrade", "밴시+공격력+올|업", "바이킹+공격력+올|업", "배틀크루저+공격력+올|업",
     ),
     "research_bansheecloakingfield": (
@@ -83,7 +83,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
         "ghost+cloak|invisible|stealth+research|unlock|upgrade|make", "개인은폐|퍼스널", "personal cloaking",
     ),
     "research_rapidfirelaunchers": (
-        "사이클론+연구|업그레이드|업글|속사|연사|공속|공격속도+연구|올려|해줘|개발", "속사|연사+연구|업그레이드", "cyclone+research|upgrade|rapid|fire rate",
+        "사이클론+연구|업그레이드|업글|속사|연사|공속|공격속도+연구|올려|해줘|개발", "속사|연사+연구|업그레이드", "래피드+파이어+런처", "래피드파이어", "rapid+fire+launcher", "cyclone+research|upgrade|rapid|fire rate",
         "-락온|lock", "-뽑|생산|train",
     ),
     "research_ravencorvidreactor": (
@@ -113,11 +113,11 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "train_scv": ("일꾼+뽑|생산|계속|더|만들|늘", "scv+뽑|생산|계속|더|만들|늘", "worker+train|build|make|more", "건설로봇+뽑|생산|만들", "일꾼+많이|추가"),
     "train_marine": (
         "해병+뽑|생산|만들|추가|더|많이", "마린+뽑|생산|만들|추가|더|많이", "고기방패+해병|마린", "미네랄+보병|해병", "marine+train|build|make|more",
-        "보병+뽑|생산|만들|추가|더|많이", "bio+more",
+        "보병+뽑|생산|만들|추가|더|많이", "bio+more", "-공격력|방어력|업그레이드|업글|연구|방업|공업",
     ),
     "train_marauder": ("불곰+뽑|생산|만들|추가|더", "마라우더+뽑|생산", "marauder+train|build|make|more", "탱커+보병", "-슬로우|둔화|연구|업"),
     "train_reaper": ("사신+뽑|생산|만들|추가", "리퍼+뽑|생산", "reaper+train|build|make"),
-    "train_ghost": ("유령+뽑|생산|만들|추가", "고스트+뽑|생산|만들", "ghost+train|build|make", "-핵|nuke|은신|연구"),
+    "train_ghost": ("유령+뽑|생산|만들|추가", "고스트+뽑|생산|만들", "ghost+train|build|make", "-핵|nuke|은신|cloak|연구"),
     "train_hellion": ("화염차+뽑|생산|만들|추가", "헬리온+뽑|생산", "hellion+train|build|make", "-변신|업그레이드|업글|연구"),
     "train_hellbat": ("화염기갑병+뽑|생산|만들|추가", "헬벳+뽑|생산|만들", "hellbat+train|build|make", "-변신|업그레이드|업글|연구", "두꺼운+화염차+뽑|생산"),
     "train_siegetank": (
@@ -129,7 +129,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "train_medivac": ("의료선+뽑|생산|만들|추가", "메디박+뽑|생산", "medivac+train|build|make", "힐러+뽑|생산|만들", "-빠르|빨리|부스터|가속"),
     "train_vikingfighter": ("바이킹+뽑|생산|만들|추가", "viking+train|build|make", "-땅|착륙|날아|이륙|모드"),
     "train_liberator": ("해방선+뽑|생산|만들|추가", "liberator+train|build|make", "공중에서+지상+때리|공격+유닛+하나|뽑", "-모드|사거리|지키"),
-    "train_banshee": ("밴시+뽑|생산|만들|추가", "banshee+train|build|make|more", "공중에서+지상+때리|공격+유닛+하나|뽑", "-은신|투명|클로킹|연구|빠르|속도|업"),
+    "train_banshee": ("밴시+뽑|생산|만들|추가", "banshee+train|build|make|more", "공중에서+지상+때리|공격+유닛+하나|뽑", "-은신|투명|클로킹|cloak|연구|빠르|속도|업"),
     "train_raven": ("밤까마귀+뽑|생산|만들|추가", "레이븐+뽑|생산|만들", "raven+train|build|make", "-에너지|폭발|탄약|연구"),
     "train_battlecruiser": ("전투순양함+뽑|생산|만들|추가", "배틀크루저+뽑|생산|만들", "battlecruiser+train|build|make", "bc+뽑|생산", "-야마토|연구"),
     # ------------------------------------------------------------------ build (16)
@@ -140,8 +140,8 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "build_barracks": ("병영+지어|건설|하나|추가|더|올리", "배럭+지어|건설|하나|추가|더|올리", "barracks+build|more|another", "rax+build|more"),
     "build_factory": ("군수공장+지어|건설|하나|추가|더|올리", "팩토리+지어|건설|하나|추가|더", "factory+build|more|another"),
     "build_starport": ("우주공항+지어|건설|하나|추가|더|올리", "스타포트+지어|건설|하나|추가|더", "starport+build|more|another"),
-    "build_commandcenter": ("사령부+지어|건설|하나|추가|더|올리", "멀티+지어|건설|먹|하나", "확장+하자|가자|해|지어|먹", "expand|expansion", "cc+build|expand", "-궤도|요새|이륙|날려"),
-    "build_engineeringbay": ("공학+연구소+지어|건설|하나", "이베이+지어|건설|하나", "engineering+bay+build"),
+    "build_commandcenter": ("사령부+지어|건설|하나|추가|더|올리|먼저|우선", "앞마당+사령부", "멀티+지어|건설|먹|하나", "확장+하자|가자|해|지어|먹", "expand|expansion", "cc+build|expand", "-궤도|요새|이륙|날려"),
+    "build_engineeringbay": ("공학+연구소+지어|건설|하나", "이베이+지어|건설|하나", "에베+지어|건설|하나|추가", "엔지니어링+베이+지어|건설|하나|추가", "엔지니어링베이+지어|건설", "-사령부|병영|벙커|배럭", "engineering+bay+build"),
     "build_armory": ("무기고+지어|건설|하나|추가", "armory+build"),
     "build_ghostacademy": ("유령+사관학교+지어|건설|하나", "고스트+아카데미+지어|건설", "ghost+academy+build"),
     "build_fusioncore": ("융합로+지어|건설|하나", "퓨전+코어+지어|건설", "fusion+core+build"),
@@ -159,7 +159,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
         "-연구|업그레이드",
     ),
     "build_reactor": (
-        "리액터+달|붙|지어|건설|해줘", "병영|군수공장|우주공항+리액터", "reactor+build|add|attach", "동시+생산|두배|2기씩+애드온|달|붙", "쌍둥이|더블+생산",
+        "리액터|반응로+달|붙|지어|건설|해줘", "반응로", "병영|군수공장|우주공항+리액터", "reactor+build|add|attach", "동시+생산|두배|2기씩+애드온|달|붙", "쌍둥이|더블+생산",
         "-연구|업그레이드|에너지",
     ),
     "build_nuke": ("핵+준비|장전|만들|생산|장착", "핵+미사일+준비|만들|장전", "고스트|유령+핵+준비|장전", "nuke+arm|prepare|build|load|ready", "사일로+핵", "-발사|쏴|투하|떨"),
@@ -167,13 +167,13 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "morph_siegemode": (
         "탱크+포대|시즈|공성|고정|박아|고정사격|자리잡|배치|siege", "시즈+모드|해줘|켜|전환|siege", "탱크+사거리|사정거리|멀리+늘|길게|올|키|크게|넓|해줘", "tank+range+increase|longer|more", "tank+siege|deploy|fixed|sieged",
         "-풀|해제|이동|돌려|unsiege|일어나|기동",
-        "-탱크뽑|탱크생산|탱크양산|탱크만들|탱크추가|탱크더뽑|탱크더만들",
+        "-탱크뽑|탱크생산|탱크양산|탱크만들|탱크추가|탱크더뽑|탱크더만들", "-trainasiege|buildasiege|makeasiege|trainsiege|buildsiege|makesiege|traintank|buildtank|maketank|trainatank|buildatank|makeatank",
     ),
     "morph_unsiege": (
         "탱크+이동|일어나|풀|해제|기동|걸어|돌려+모드|시즈|해줘|해|돌려", "시즈+풀|해제|꺼|끄", "탱크+이동+모드", "unsiege|un-siege", "tank+mobile|move+mode|unsiege|unsieg",
         "-탱크뽑|탱크생산|탱크양산|탱크만들|탱크추가|탱크더뽑|탱크더만들",
     ),
-    "morph_orbitalcommand": ("사령부+궤도|오비탈", "궤도+사령부+바꿔|변환|업그레이드|전환|해줘|만들", "orbital", "스캔|뮬+쓰려고+사령부+업", "사령부+업그레이드+궤도"),
+    "morph_orbitalcommand": ("사령부+궤도|오비탈", "궤도+사령부+바꿔|변환|업그레이드|전환|해줘|만들|올려|올리|업글", "orbital", "스캔|뮬+쓰려고+사령부+업", "사령부+업그레이드+궤도"),
     "morph_planetaryfortress": ("사령부+요새|행성|플랭|방어", "행성+요새", "planetary", "사령부+방어+요새", "pf+만들|변환|바꿔"),
     "morph_supplydepot_lower": (
         "보급고+낮|내려|열어|열|길+열|통과", "서플+낮|내려|열어|통과", "depot+lower|open|down", "서플+길+열", "-올려|막|세워",
@@ -181,9 +181,9 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "morph_supplydepot_raise": ("보급고+올려|막|세워|닫|벽", "서플+올려|막|세워|닫|벽", "depot+raise|close|wall|up", "입구+막아+보급고|서플|벽", "-낮|내려|열"),
     "morph_hellbat": (
         "화염차+변신|두꺼|두껍|탱커|벳|헬벳|기갑병|모드|바꿔", "화염차+헬벳", "hellion+hellbat|morph|transform|thick", "hellbat+mode|morph|transform",
-        "-뽑|생산|연구|업",
+        "-뽑|생산|연구|업", "-화염차로|헬리온으로|화염차모드로",
     ),
-    "morph_hellion": ("화염기갑병|헬벳+화염차로|원래|되돌|변신|바꿔|헬리온+모드", "hellbat+hellion|back|revert", "-뽑|생산|연구|업"),
+    "morph_hellion": ("화염기갑병|헬벳+화염차로|원래|되돌|변신|바꿔|헬리온+모드", "화염차로+변신|바꿔|되돌|돌려|전환|해줘", "헬리온으로+변신|바꿔|전환", "hellbat+hellion|back|revert", "-뽑|생산|연구|업"),
     "morph_vikingassaultmode": (
         "바이킹+땅|착륙|내려|지상|돌격|걸어|뛰어", "viking+land|ground|assault|walk", "바이킹+땅에+내려", "-다시+날|이륙|공중|전투기",
     ),
@@ -208,11 +208,11 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
         "일꾼+임시|호출+자원",
     ),
     "effect_supplydrop": (
-        "보급+드롭|줘|내려|떨궈|주|받|쏴", "서플+드롭|떨궈|내려줘", "인구수+모자|부족|막혔|꽉+보급+줘|드롭|내려|떨궈|주", "supply+drop|call down|extra", "인구수+늘려줘+궤도|사령부|에너지",
+        "보급+드롭|줘|내려|떨궈|주|받|쏴", "서플+드롭|떨궈|내려줘", "보급+투하|투입", "인구수+모자|부족|막혔|꽉+보급+줘|드롭|내려|떨궈|주", "supply+drop|call down|extra", "인구수+늘려줘+궤도|사령부|에너지",
         "-지어|건설|하나|올려|낮",
     ),
     "lift": (
-        "사령부|병영|군수공장|우주공항|건물+이륙|띄워|띄우|날려|날아|뜨게|공중|올려", "lift+off|lift|takeoff|fly|float", "건물+날려|띄워|이륙|하늘", "사령부+날려|날아|띄워+앞마당|멀티|가", "-착륙|내려앉|내려안|land",
+        "사령부|병영|군수공장|우주공항|건물+이륙|띄워|띄우|날려|날아|뜨게|공중|올려", "lift+off|lift|takeoff|fly|float", "건물+날려|띄워|이륙|하늘", "사령부+날려|날아|띄워+앞마당|멀티|가", "-착륙|내려앉|내려안|land", "-궤도로|궤도사령부로|오비탈로|요새로|행성요새로",
     ),
     "land": ("착륙|내려앉|내려안|내려놓|land", "건물+착륙|내려|앉혀|놓아|내려앉", "앞마당|본진|멀티+착륙|내려앉", "-이륙|띄워|날려"),
     "effect_stim": (
@@ -248,7 +248,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     "effect_spray": ("스프레이|낙서|spray", "그림+뿌|그려|낙서", "로고+뿌|그려|찍|스프레이"),
     "behavior_cloakon": (
         "클로킹+켜|써|해|들어가|가동|시작|on", "은신+켜|써|해|들어|시작|하자|on", "투명+해|되|켜|들어|시작", "은폐+켜|써|해|들어|시작", "cloak+on|activate|enable|turn on|use",
-        "밴시|유령|고스트+은신|클로킹|투명+해|켜|써", "-연구|가능|개발|업그레이드|풀|해제|꺼|끄|off|research", "-연구",
+        "밴시|유령|고스트+은신|클로킹|투명+해|켜|써", "banshee|ghost+cloak", "banshees|ghosts+cloak", "-연구|가능|개발|업그레이드|풀|해제|꺼|끄|off|research", "-연구",
     ),
     "behavior_cloakoff": (
         "클로킹+풀|해제|꺼|끄|취소|off", "은신+풀|해제|꺼|끄|취소|벗|off", "투명+풀|해제|꺼|끄|벗|취소", "은폐+풀|해제|꺼|끄", "decloak|cloak+off|disable|turn off",
@@ -265,10 +265,10 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     ),
     "burrowup": ("지뢰+올라|나와|풀|해제|깨|일어|뽑|꺼내|unburrow|up|surface", "매복+풀|해제|끝", "widow+unburrow|up|surface|emerge", "mine+unburrow|up|surface|emerge"),
     "load": (
-        "태워|태우|탑승|실어|싣|타|load", "의료선+해병|병력|유닛|보병+태워|태우|실어|싣", "벙커+넣어|들어가|입장", "load+unit|bunker|medivac|marine", "-전부|모두|다+내려|내리",
+        "태워|태우|탑승|실어|싣|타|load", "수송+적재|탑승|태워|싣", "의료선+해병|병력|유닛|보병+태워|태우|실어|싣", "벙커+넣어|들어가|입장", "load+unit|bunker|medivac|marine", "-전부|모두|다+내려|내리",
     ),
     "unloadallat": (
-        "의료선+내려|내리|하차|투하|드롭+지정|여기|거기|위치|적|본진|앞마당", "드롭+내려|투하|하차|뿌려", "medivac+unload|drop|deploy", "병력+내려+의료선", "unload+at|here|there", "견제+드롭",
+        "의료선+내려|내리|하차|투하|드롭+지정|여기|거기|위치|적|본진|앞마당", "의료선+자리+내려|내리|하차|투하", "드롭+내려|투하|하차|뿌려", "medivac+unload|drop|deploy", "병력+내려+의료선", "unload+at|here|there", "견제+드롭",
     ),
     "unloadall": (
         "전부|모두|다+내려|내리|하차|비워|꺼내|풀어|unload", "벙커+비워|꺼내|내려|내리", "일꾼+내려|내리|꺼내|나와+사령부", "unload+all|everything|bunker", "empty+bunker",

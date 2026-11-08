@@ -262,3 +262,23 @@ def test_bare_infantry_upgrade_stays_a_tie() -> None:
     scored = catalog.search_scored("보병 업 해줘")
     assert {e.id for e, _ in scored[:2]} == {"research_terraninfantryarmor", "research_terraninfantryweapons"}
     assert scored[0][1] == scored[1][1]
+
+
+WIRE_PHRASES = [
+    ("반응로 달아", "build_reactor"), ("뮬 떨궈", "effect_calldownmule"), ("보급 투하해", "effect_supplydrop"),
+    ("수송 적재", "load"), ("의료선 그 자리에 내려", "unloadallat"), ("앞마당 사령부 먼저", "build_commandcenter"),
+    ("에베 지어", "build_engineeringbay"), ("엔지니어링 베이 지어", "build_engineeringbay"),
+    ("보병 무기 업그레이드 연구해", "research_terraninfantryweapons"), ("보병 방어구 업그레이드 연구해", "research_terraninfantryarmor"),
+    ("차량 무기 업그레이드 연구해", "research_terranvehicleweapons"), ("함선 무기 업그레이드 연구해", "research_terranshipweapons"),
+    ("래피드 파이어 런처 연구해", "research_rapidfirelaunchers"), ("train a siege tank", "train_siegetank"),
+    ("cloak the banshees", "behavior_cloakon"), ("banshee cloak", "behavior_cloakon"),
+    ("보병 공격력 한 단계 더", "research_terraninfantryweapons"), ("궤도 사령부로 올려", "morph_orbitalcommand"),
+    ("화염기갑병을 화염차로 변신", "morph_hellion"),
+]
+
+
+@pytest.mark.parametrize("phrase,winner", WIRE_PHRASES, ids=[p for p, _ in WIRE_PHRASES])
+def test_corpus_phrases_have_a_single_clear_winner(phrase, winner) -> None:
+    scored = cat.search_scored(phrase, 4)
+    assert scored and scored[0][0].id == winner, scored
+    assert len(scored) == 1 or scored[0][1] > scored[1][1], [(e.id, s) for e, s in scored]
