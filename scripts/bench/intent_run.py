@@ -10,6 +10,13 @@ Systems
             callable with text over chat/completions, so this is a text-model PROXY for the shipped prompt, not the
             shipped model.  The prompt carries no game state (the product prompt has none).
 
+Variants (--variant, suffix flags on the shipped prompt names): ``both`` = V0 shipped; ``both_cv1`` = V1 (the model picks a
+catalog id from the enum listed in the prompt, the server still evaluates it against the state); ``both_cv2`` = V2 (the
+model passes the user's phrase, the server resolver ``realtime_catalog.resolve_intent`` picks / asks / refuses).  The
+catalog variants are answered with the row's game state resolved server side (``catalog_state_for_row``); the prompt never
+carries state.  ``--kind rtx`` drives the REAL Realtime model over a websocket with the transcript as TEXT input
+(``gpt-realtime`` / ``gpt-realtime-mini``); ``--kind tx`` is the chat-completions proxy.
+
 Usage (from repo root; the schema module must be the shipped one):
   python3 scripts/bench/intent_run.py offline
   source ~/.zshenv; python3 scripts/bench/intent_run.py llm --model gemini-3.5-flash-lite --reps 1
@@ -112,12 +119,63 @@ def provider_output_to_commands(po: dict) -> list[str]:
     return sorted(dict.fromkeys(cmds))
 
 
+def catalog_state_for_row(row: dict):
+    """The row's game state as a ``sc2_catalog.CatalogState`` (what ``PythonSC2BotAdapter.catalog_state()`` supplies live).
+
+    Same world the gold is derived from (intent_catalog.resolve): the listed structures (an add-on structure marks its parent
+    as equipped), every non-structure caster present with the row's energy, the researched upgrades.  Resources are not a
+    gate in the gold, so no ``can_afford``; targets (enemy / geyser / patch) are unknown = not a gate either.
+    """
+
+    from starcraft_commander import sc2_catalog as cat
+
+    st = row["state"]
+    structures = list(st["structures"])
+    owned = []
+    tag = 0
+    for name in structures:
+        tag += 1
+        addon = ""
+        if name in C.ADDON_PARENTS:
+            addon = "techlab" if f"{name}TECHLAB" in structures else "reactor" if f"{name}REACTOR" in structures else "none"
+        owned.append(cat.Owned(name, tag=tag, addon=addon, is_structure=True))
+    structure_names = set(structures) | set(C.structure_names())
+    casters = {i for e in cat.all_commands() for i in e.valid_issuers} | {"SCV"}
+    for name in sorted(casters - structure_names):
+        tag += 1
+        owned.append(cat.Owned(name, tag=tag, energy=float(st.get("energy", 0))))
+    energy_structs = {"ORBITALCOMMAND", "ORBITALCOMMANDFLYING"}
+    owned = [o if o.type_name not in energy_structs else cat.Owned(o.type_name, tag=o.tag, addon=o.addon, is_structure=True,
+                                                                     energy=float(st.get("energy", 0))) for o in owned]
+    return cat.CatalogState(owned=tuple(owned), upgrades_done=frozenset(st["researched"]), minerals=st.get("minerals"),
+                            vespene=st.get("gas"))
+
+
+def _gold_id(command_id: str, level: int | None, issuer: str) -> str:
+    from starcraft_commander import sc2_catalog as cat
+
+    entry = cat.get_command(command_id)
+    name = entry.header_name
+    if level:
+        return f"{name}#{level}"
+    if name in C.QUALIFIED and issuer:
+        return f"{name}@{issuer.removesuffix('FLYING') if name in ('BUILD_TECHLAB', 'BUILD_REACTOR') else issuer}"
+    return name
+
+
 def decision_to_prediction(decision) -> dict:
     kind = decision.kind
+    command_id = getattr(decision, "command_id", "")
+    narration = getattr(decision, "narration", "")
     if kind == "clarification":
-        return {"kind": "ask", "command": None, "commands": [], "reason": ""}
+        return {"kind": "ask", "command": None, "commands": [], "reason": "", "chosen": command_id, "narration": narration}
     if kind == "blocked":
         return {"kind": "refuse", "command": None, "commands": [], "reason": decision.source}
+    if kind == "executed" and command_id:
+        res = (decision.provider_output or {}).get("catalog_resolution") or {}
+        cid = _gold_id(command_id, res.get("level"), res.get("issuer", ""))
+        return {"kind": "execute", "command": cid, "commands": [cid], "reason": narration, "source": decision.source,
+                "chosen": command_id, "narration": narration}
     if kind == "executed":
         cmds = provider_output_to_commands(decision.provider_output or {})
         return {"kind": "execute", "command": cmds[0] if len(cmds) == 1 else (None if not cmds else "MULTI"),
@@ -125,12 +183,13 @@ def decision_to_prediction(decision) -> dict:
     return {"kind": "none", "command": None, "commands": [], "reason": decision.kind}
 
 
-def decide(transcript: str, tool_args: dict | None) -> dict:
+def decide(transcript: str, tool_args: dict | None, row: dict | None = None) -> dict:
     from starcraft_commander import web_gui as WG
 
     transcript = " ".join((transcript or "").split())[:2000]
+    state = catalog_state_for_row(row) if row is not None else None
     try:
-        return decision_to_prediction(WG._decide_realtime_intent(transcript, tool_args))
+        return decision_to_prediction(WG._decide_realtime_intent(transcript, tool_args, catalog_state=state))
     except (ValueError, TypeError, KeyError) as exc:
         return {"kind": "none", "command": None, "commands": [], "reason": f"invalid_tool_call: {str(exc)[:80]}"}
 
@@ -139,24 +198,26 @@ def decide(transcript: str, tool_args: dict | None) -> dict:
 
 
 def run_offline(rows: list[dict]) -> dict[str, dict]:
-    return {r["id"]: decide(r["text"], None) for r in rows}
+    return {r["id"]: decide(r["text"], None, r) for r in rows}
 
 
-async def run_llm(rows: list[dict], model: str, reps: int, variant: str, concurrency: int) -> dict[str, list[dict]]:
+async def run_llm(rows: list[dict], model: str, reps: int, variant: str, concurrency: int,
+                  kind: str = "tx") -> dict[str, list[dict]]:
     import pipelines as P  # noqa: E402 (after BENCH_SCHEMA_MODULE is set in main)
 
-    cfg = P.tx_config(model, variant)
+    cfg = P.tx_config(model, variant) if kind == "tx" else P.rtx_config(model, variant)
+    run_one = P.run_text if kind == "tx" else P.run_realtime_text
     sem = asyncio.Semaphore(concurrency)
     out: dict[str, list[dict]] = {r["id"]: [] for r in rows}
 
     async def one(row, rep):
         async with sem:
-            res = await P.run_text(cfg, row, rep)
+            res = await run_one(cfg, row, rep)
         args = res.get("tool_args")
         # An abstained fast rule is not a model answer: the product asks the model only when the deterministic layer
         # is silent, but a tool call with the same transcript goes through the very same decision function.
-        pred = decide(row["text"], args) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
-                                                                         "reason": res.get("error") or "no tool call"}
+        pred = decide(row["text"], args, row) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
+                                                                              "reason": res.get("error") or "no tool call"}
         pred["latency_ms"] = res.get("total_ms")
         pred["tokens"] = (res.get("tokens") or {}).get("total")
         pred["tool_args"] = args
@@ -176,8 +237,8 @@ def rescore_llm(path: Path) -> Path:
     for r in rows:
         old = data["predictions"].get(r["id"], {})
         args = old.get("tool_args")
-        pred = decide(r["text"], args) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
-                                                                       "reason": old.get("reason", "no tool call")}
+        pred = decide(r["text"], args, r) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
+                                                                          "reason": old.get("reason", "no tool call")}
         pred.update({k: old.get(k) for k in ("latency_ms", "tokens", "tool_args")})
         preds[r["id"]] = pred
     return save(path.stem.replace("intent_baseline_", ""), rows, preds, data["meta"])
@@ -202,10 +263,27 @@ def table(agg: dict) -> str:
     return "\n".join(lines)
 
 
+def _pct(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))], 1)
+
+
+def cost_summary(preds: dict[str, dict]) -> dict:
+    """Tokens and latency of the model calls in this run (the scorer does not aggregate them)."""
+
+    lat = [p["latency_ms"] for p in preds.values() if isinstance(p.get("latency_ms"), (int, float))]
+    tok = [p["tokens"] for p in preds.values() if isinstance(p.get("tokens"), (int, float))]
+    return {"calls": len(preds), "latency_n": len(lat), "latency_p50_ms": _pct(lat, 0.5), "latency_p95_ms": _pct(lat, 0.95),
+            "tokens_mean": round(sum(tok) / len(tok), 1) if tok else None, "tokens_n": len(tok)}
+
+
 def save(name: str, rows: list[dict], preds: dict[str, dict], meta: dict) -> Path:
     RESULTS.mkdir(parents=True, exist_ok=True)
     scores = SC.score_all(rows, preds)
     agg = SC.aggregate(rows, preds)
+    meta = {**meta, "cost": cost_summary(preds), "loadavg_1_5_15": [round(x, 2) for x in os.getloadavg()]}
     path = RESULTS / f"intent_baseline_{name}.json"
     cats = SC.by_category(rows, preds)
     path.write_text(json.dumps({"meta": meta, "aggregate": agg, "by_category": cats, "scores": scores, "predictions": preds},
@@ -225,8 +303,10 @@ def main(argv=None) -> int:
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--pred", default="")
     ap.add_argument("--tiers", default="")
+    ap.add_argument("--kind", choices=["tx", "rtx"], default="tx",
+                    help="tx = chat-completions proxy; rtx = real Realtime model over a websocket with TEXT input")
     args = ap.parse_args(argv)
-    if args.system == "llm":
+    if args.system in ("llm", "rtx"):
         os.environ["BENCH_SCHEMA_MODULE"] = "shipped_schema"  # pipelines.py builds the SHIPPED tool/prompt (read at import)
     rows = load_rows()
     if args.tiers:
@@ -241,12 +321,14 @@ def main(argv=None) -> int:
     if args.system == "offline":
         save("offline", rows, run_offline(rows), {"system": "offline deterministic layer (no model)", "rows": len(rows)})
         return 0
-    reps = asyncio.run(run_llm(rows, args.model, args.reps, args.variant, args.concurrency))
+    reps = asyncio.run(run_llm(rows, args.model, args.reps, args.variant, args.concurrency, args.kind))
+    system = ("shipped prompt via the real Realtime model, transcript as TEXT input" if args.kind == "rtx"
+              else "shipped prompt via text chat model (proxy)")
     for rep in range(args.reps):
         preds = {rid: p[rep] for rid, p in reps.items() if len(p) > rep}
-        save(f"llm_{args.model}_{args.variant}_rep{rep}", rows, preds,
-             {"system": "shipped prompt via text chat model (proxy)", "model": args.model, "variant": args.variant,
-              "rep": rep, "reps": args.reps, "rows": len(rows)})
+        save(f"llm_{args.kind}_{args.model}_{args.variant}_rep{rep}", rows, preds,
+             {"system": system, "kind": args.kind, "model": args.model, "variant": args.variant,
+              "rep": rep, "reps": args.reps, "rows": len(rows), "concurrency": args.concurrency})
     return 0
 
 

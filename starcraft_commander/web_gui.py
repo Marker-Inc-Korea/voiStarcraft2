@@ -5521,19 +5521,6 @@ def _decide_realtime_intent(
             "tool_call",
             realtime_intent.tool_arguments_to_provider_output(tool_arguments),
         )
-    if tool_arguments is not None and tool_arguments.get("catalog") not in (None, "", {}):
-        # A catalog call is resolved against the live state by the server (never by the model); the emergency/fast
-        # layers above it have already had their say on the transcript.
-        if transcript and _micromachine_request_is_emergency(transcript, None):
-            return _RealtimeDecision(
-                "executed",
-                realtime_intent.TIER_EMERGENCY,
-                "emergency_override",
-                _micromachine_emergency_safety_output(transcript),
-            )
-        decided = _catalog_decision(transcript, tool_arguments, catalog_state)
-        if decided is not None:
-            return decided
     emergency_text = bool(transcript) and _micromachine_request_is_emergency(transcript, None)
     if emergency_text and _realtime_call_is_named_operation_cancel(tool_arguments, transcript):
         # "정찰 작전 취소해" cancels one named force; only an explicit retreat word may widen it.
@@ -5564,6 +5551,12 @@ def _decide_realtime_intent(
             _fast_match_provider_output(rule),
             family=rule.family,
         )
+    if tool_arguments is not None and tool_arguments.get("catalog") not in (None, "", {}):
+        # A catalog call is resolved against the live state by the server (never by the model); the emergency and
+        # promoted fast-rule layers above have already had their say on the transcript.
+        decided = _catalog_decision(transcript, tool_arguments, catalog_state)
+        if decided is not None:
+            return decided
     if tool_arguments is not None:
         tier = realtime_intent.classify_tier(tool_arguments)
         if tier == realtime_intent.TIER_CLARIFICATION:
