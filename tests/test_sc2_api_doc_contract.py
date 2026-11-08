@@ -465,7 +465,9 @@ def test_addon_is_not_ordered_on_a_barracks_that_already_has_one() -> None:
 )
 def test_research_goes_to_the_tech_lab_that_is_idle_and_not_to_a_busy_one(token, lab, ability) -> None:
     bot = harness.make_bot()
-    bot.add_unit(lab, orders=(AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK,))
+    # The busy lab researches the OTHER upgrade: the same upgrade cannot be researched twice (research_already_pending).
+    other = AbilityId.RESEARCH_COMBATSHIELD if token == "STIMPACK" else AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK
+    bot.add_unit(lab, orders=(other,))
     idle = bot.add_unit(lab)
     _, views = run(bot, *lower_direct("research_upgrade", [token]))
     assert tags_of(views) == {idle.tag} and {v["ability_name"] for v in views} == {ability}

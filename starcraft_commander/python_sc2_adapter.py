@@ -979,6 +979,11 @@ class PythonSC2BotAdapter:
 
         if action.count <= 0:
             return _refusal_report(action.count, "non_positive_count")
+        from starcraft_commander import sc2_research  # catalog-driven level/researcher/ability choice (python-sc2 bots)
+
+        planned = sc2_research.resolve_research(action.subject, self.bot, only_tags=sc2_research.pinned_tags(action))
+        if planned is not None:
+            return await sc2_research.issue_research(self, action, planned)
         upgrade = self._resolve_upgrade(action.subject)
         if upgrade is None:
             return _refusal_report(action.count, "unresolvable_upgrade")
@@ -2916,6 +2921,11 @@ class PythonSC2BotAdapter:
                 candidates = [c for c in candidates if _has_addon_kind(c, "techlab") is not False]
             return candidates
         if kind == "research_upgrade":
+            from starcraft_commander import sc2_research
+
+            planned = sc2_research.resolve_research(action.subject, self.bot)
+            if planned is not None:
+                return list(planned.structures)
             researcher_name = self._effective_researcher(
                 action, _normalized_name(action.metadata.get("researcher"))
             )

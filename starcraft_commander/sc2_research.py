@@ -16,7 +16,7 @@ really exists decides; the catalog route wins when both are present.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from starcraft_commander import sc2_catalog as cat
@@ -41,7 +41,7 @@ class ResearchPlan:
 def find_entry(subject: str) -> tuple[cat.CommandEntry, str] | None:
     """``(catalog entry, pinned upgrade level or "")`` for a research subject, or ``None`` when it is not catalogued."""
 
-    token = _NON_ALNUM.sub("", str(subject or "")).upper().removeprefix("TERRAN") if False else _NON_ALNUM.sub("", str(subject or "")).upper()
+    token = _NON_ALNUM.sub("", str(subject or "")).upper()
     if not token:
         return None
     from starcraft_commander.python_sc2_adapter import _SEMANTIC_UPGRADE_ALIASES
@@ -57,6 +57,13 @@ def find_entry(subject: str) -> tuple[cat.CommandEntry, str] | None:
             if wanted in entry.upgrades:
                 return entry, wanted if len(entry.upgrades) > 1 else ""
     return None
+
+
+def pinned_tags(action: Any) -> frozenset[int] | None:
+    """Structure tags the Direct lease reserved for ``action`` (``None`` when nothing is pinned)."""
+
+    tags = getattr(action, "metadata", {}).get("_direct_unit_tags")
+    return frozenset(tags) if tags else None
 
 
 def _is_python_sc2_bot(bot: object) -> bool:
@@ -169,13 +176,18 @@ def resolve_research(subject: str, bot: Any, *, only_tags: frozenset[int] | None
         ability_name = next(iter(entry.abilities.values()))
         if any(ability_name in _order_ability_names(u) for u in _structures(bot)):
             return _refuse(entry.id, "research_already_pending")
+    if not pinned:
+        _, progress = cat.upgrade_progress_name(entry, state)
+        if progress:  # done / running / past the last level: said before "the lab is busy"
+            return _refuse(entry.id, progress)
     result = cat.evaluate(entry.id, state, issuer=issuer, upgrade=pinned or None)
     if result.ok:
         by_tag = {getattr(u, "tag", None): u for u in _structures(bot)}
         structures = tuple(by_tag[t] for t in result.issuer_tags if t in by_tag)
         level = entry.upgrades.index(result.upgrade) + 1 if result.upgrade in entry.upgrades else 0
         return ResearchPlan(
-            command_id=entry.id, structures=structures, ability=AbilityId[result.ability],
+            command_id=entry.id, structures=structures,
+            ability=AbilityId[result.ability],
             upgrade=result.upgrade, level=level,
         )
     reason = result.reason
@@ -225,5 +237,21 @@ def _alternative_route(entry: cat.CommandEntry, pinned: str, state: cat.CatalogS
     return ResearchPlan(command_id=entry.id, structures=structures, ability=AbilityId[ability_name], upgrade=upgrade, level=1)
 
 
-__all__ = ["ResearchPlan", "find_entry", "resolve_research", "snapshot"]
-_ = field  # dataclass ``field`` kept importable for subclassing callers
+async def issue_research(adapter: Any, action: Any, plan: ResearchPlan) -> Any:
+    """Send ``plan.ability`` to up to ``action.count`` of the planned structures (no-target order, ``queue=False``)."""
+
+    from starcraft_commander.python_sc2_adapter import _issuance_report, _refusal_report
+
+    if plan.refusal:
+        return _refusal_report(action.count, plan.refusal)
+    issued = 0
+    for structure in plan.structures:
+        if issued >= action.count:
+            break
+        ability = plan.ability
+        if await adapter._issue_unit_order(lambda target, _s=structure: _s(target, subtract_cost=True), ability):
+            issued += 1
+    return _issuance_report(action.count, issued, "insufficient_researchers")
+
+
+__all__ = ["ResearchPlan", "find_entry", "pinned_tags", "issue_research", "resolve_research", "snapshot"]
