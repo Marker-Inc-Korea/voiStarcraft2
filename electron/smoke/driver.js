@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
 const Target = require("./target.js");
+const SessionGuard = require("./session_guard.js");
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
@@ -29,8 +30,9 @@ async function main() {
   const backend = createFakeBackend({ port: 0, runtime: process.env.SMOKE_RUNTIME || "dry_run_fake_bot" });
   const port = await backend.listen();
   process.env.VOI_COMMANDER_URL = `http://127.0.0.1:${port}`;
-  const { screen } = require("electron");
+  const { screen, nativeImage } = require("electron");
   await app.whenReady();
+  if (SessionGuard.isBlocked(nativeImage)) { await backend.close(); app.exit(2); return; } // locked/dark screen: BLOCKED (exit 2), never a fake FAIL
   const target = Target.pickTarget(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.env.SMOKE_DISPLAY, screen.getCursorScreenPoint());
   const main = require("../main.js"); // after whenReady(): main.js picks its display from the cursor, so park the cursor first
   try { const p = Target.pointIn(target.bounds, 0.5, 0.5); execFileSync(WARP, [String(p.x), String(p.y)]); await sleep(150); } catch { /* no warp helper: cursor stays */ }
