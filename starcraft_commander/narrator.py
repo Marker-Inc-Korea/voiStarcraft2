@@ -123,6 +123,8 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
     "no_damaged_repair_target": "수리할 손상된 대상이 없습니다",
     "no_ready_idle_producer": "준비된 유휴 생산 건물이 없습니다",
     "unaffordable": "자원이 부족합니다",
+    "unresolvable_upgrade": "연구할 업그레이드를 게임 데이터에서 찾지 못했습니다",
+    "insufficient_researchers": "연구 명령을 받을 수 있는 건물이 부족합니다",
     "supply_blocked": "보급(인구수)이 부족합니다 — 보급고가 필요합니다",
     "producer_needs_techlab": "이 유닛은 기술실(Tech Lab)이 붙은 생산 건물이 필요합니다",
     "production_queue_full": "생산 대기열이 가득 찼습니다 (건물당 5칸, 리액터 8칸)",
@@ -730,6 +732,10 @@ def _error_line(error: SC2ExecutionError) -> str:
             label = SC2_ACTION_TYPE_KOREAN_LABELS.get(error.action_type, label)
         detail = str(error.metadata.get("detail", ""))
         reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail) or _ability_refusal_reason(detail)
+        if reason is None:
+            from starcraft_commander.sc2_catalog import refusal_korean
+
+            reason = refusal_korean(detail) or None
         if reason is None:
             reason = _sanitized_action_refusal_reason(detail or error.message)
         if reason is None:
