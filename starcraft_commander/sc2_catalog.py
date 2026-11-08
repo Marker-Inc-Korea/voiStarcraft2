@@ -23,6 +23,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from starcraft_commander.sc2_catalog_cues import CUES
 from starcraft_commander.sc2_catalog_data import TERRAN_COMMAND_FACTS
 
 CATEGORIES: Final[tuple[str, ...]] = ("train", "build", "research", "morph", "effect", "behavior", "other")
@@ -378,8 +379,58 @@ def find_by_alias(text: str, *, category: str | None = None) -> tuple[CommandEnt
     return found
 
 
+def _compile_cues() -> dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]]:
+    """``command id -> (positive cues, entry vetoes)``; every cue part is a tuple of normalised alternatives."""
+
+    compiled: dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]] = {}
+    for command_id, cues in CUES.items():
+        if command_id not in _CATALOG:
+            raise RuntimeError(f"sc2_catalog_cues: unknown command id {command_id!r}")
+        positive: list[tuple[tuple[str, ...], ...]] = []
+        vetoes: list[str] = []
+        for cue in cues:
+            if cue.startswith("-"):
+                vetoes.extend(a for a in (normalize_alias(x) for x in cue[1:].split("|")) if a)
+                continue
+            parts = tuple(
+                tuple(a for a in (normalize_alias(x) for x in part.split("|")) if a) for part in cue.split("+")
+            )
+            if all(parts):
+                positive.append(parts)
+        compiled[command_id] = (tuple(positive), tuple(dict.fromkeys(vetoes)))
+    return compiled
+
+
+_CUES: Final[dict[str, tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]]] = _compile_cues()
+
+
+def _cue_score(command_id: str, needle: str) -> int:
+    """Best cue score of ``command_id`` for the normalised phrase (0 = no cue matches or an entry veto fires)."""
+
+    positive, vetoes = _CUES.get(command_id, ((), ()))
+    if any(v in needle for v in vetoes):
+        return -1
+    best = 0
+    for parts in positive:
+        total = 0
+        for alternatives in parts:
+            hit = max((len(a) for a in alternatives if a in needle), default=0)
+            if not hit:
+                total = 0
+                break
+            total += hit * 10
+        if total:
+            best = max(best, total + 5 * len(parts))
+    return best
+
+
 def search(text: str, limit: int = 5) -> tuple[CommandEntry, ...]:
-    """Ranked fuzzy lookup for free text: exact alias first, then alias contained in the phrase (longest first)."""
+    """Ranked intent lookup for free text (``탱크 사거리 늘려줘``, ``밴시 투명해지게 연구해줘``).
+
+    Score: exact alias/id first, then plain-language cues (``sc2_catalog_cues``: every part of a cue must occur; an entry
+    veto removes the command), then an alias contained in the phrase.  Ties are returned together on purpose: the
+    interpreter picks by state (``evaluate``) or asks once.
+    """
 
     needle = normalize_alias(text)
     if not needle:
@@ -397,6 +448,14 @@ def search(text: str, limit: int = 5) -> tuple[CommandEntry, ...]:
         for entry in entries:
             if entry.id not in scored or scored[entry.id][0] < score:
                 scored[entry.id] = (score, entry)
+    for entry in all_commands():
+        cue = _cue_score(entry.id, needle)
+        if cue < 0:
+            scored.pop(entry.id, None)
+        elif cue:
+            current = scored.get(entry.id)
+            if current is None or current[0] < cue:
+                scored[entry.id] = (cue, entry)
     ranked = sorted(scored.values(), key=lambda item: (-item[0], item[1].id))
     return tuple(entry for _, entry in ranked[:limit])
 
