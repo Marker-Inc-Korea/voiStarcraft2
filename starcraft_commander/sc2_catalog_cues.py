@@ -21,11 +21,11 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
     # ------------------------------------------------------------------ research (24)
     "research_terraninfantryweapons": (
         "보병+공격|공업|데미지|화력|무기|무장", "공업", "해병+공격력+올|업|강화", "infantry+weapon|attack|damage", "bio+damage|attack|weapon",
-        "보병+업", "infantry+upgrade", "infantry+upgrade+weapon|attack|damage", "바이오+공격|데미지",
+        "보병+업", "infantry+upgrade", "infantry+upgrade+weapon|attack|damage", "바이오+공격|데미지", "-방어력|방어구|방업|아머|armor",
     ),
     "research_terraninfantryarmor": (
         "보병+방어|방업|아머|맷집|단단|방어구", "방업", "해병+방어력+올|업|강화", "infantry+armor", "bio+armor", "보병+업", "infantry+upgrade", "infantry+upgrade+armor",
-        "바이오+방어|아머",
+        "바이오+방어|아머", "-무기|공격력|공업|데미지|weapon|attack|damage",
     ),
     "research_terranstructurearmorupgrade": (
         "건물+방어|튼튼|단단|장갑|방업|체력", "building+armor|tough|sturdy|hp", "structure+armor", "건물+업그레이드|업글",
@@ -204,7 +204,7 @@ CUES: Final[dict[str, tuple[str, ...]]] = {
         "look+enemy|base|main", "정보+보게+궤도|스캔",
     ),
     "effect_calldownmule": (
-        "뮬|뮤마|뮤울|mule", "미네랄+더|많이|빨리|빠르게|늘리|캐게|캐|추가|수입", "자원+더|많이|빨리|캐게|늘리|수입|채취", "income+more|boost|faster", "mineral+more|faster|mine",
+        "뮬|뮤마|뮤울|mule", "뮬+떨궈|떨어|내려|써|쓰|뿌려|쏴|호출|불러|소환|해줘|줘", "mule+call|drop|use|cast", "미네랄+더|많이|빨리|빠르게|늘리|캐게|캐|추가|수입", "자원+더|많이|빨리|캐게|늘리|수입|채취", "income+more|boost|faster", "mineral+more|faster|mine",
         "일꾼+임시|호출+자원",
     ),
     "effect_supplydrop": (

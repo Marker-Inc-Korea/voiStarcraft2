@@ -28,7 +28,7 @@ KIND_ASK: Final[str] = "ask"
 KIND_REFUSE: Final[str] = "refuse"
 KIND_NONE: Final[str] = "none"
 
-CATALOG_MODES: Final[tuple[str, ...]] = ("off", "v1", "v2")
+CATALOG_MODES: Final[tuple[str, ...]] = ("off", "v1", "v2", "v3")
 # A hit is decisive when it beats the runner-up by at least this many score points (search_scored scale: 10 points per
 # matched character, +5 per cue part, 10 000 for an exact alias).
 DECISIVE_MARGIN: Final[int] = 15
@@ -69,11 +69,29 @@ _NEGATION_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 # Reasons for which the honest answer is "the prerequisite is missing, build it first?" (an ask), not a dead end.
-_PREREQUISITE_REASONS: Final[frozenset[str]] = frozenset({"missing_prerequisite"})
+_PREREQUISITE_REASONS: Final[frozenset[str]] = frozenset(
+    {"missing_prerequisite", "producer_needs_techlab", "no_ready_idle_producer"}
+)
+# Reasons for which a macro train/build call (MicroMachine would only queue or stall) is stopped and the user is asked
+# instead: the structure that makes the command possible does not exist.  Transient reasons (busy, no money, no geyser
+# yet) stay with the macro layer, which queues them.
+STATE_VETO_REASONS: Final[frozenset[str]] = frozenset(
+    {"missing_prerequisite", "producer_needs_techlab", "no_ready_idle_producer", "wrong_issuer", "no_matching_caster"}
+)
 _NOTES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("morph_siegemode", re.compile(r"사거리|range", re.IGNORECASE),
      "API에 탱크 사거리 업그레이드는 없어 시즈 모드를 선택했습니다"),
 )
+# "꺼 / 끄고 / off" after a switchable ability means the OFF command of the same unit (decloak, unsiege, release fire):
+# executing the ON command would do the opposite of what was said.
+_SWITCH_OFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:꺼|끄(?:고|자|라|기|면|세요)?|끔|끈|오프)(?![가-힣])|\b(?:off|turn\s+off|switch\s+off)\b", re.IGNORECASE
+)
+_OFF_COMMAND: Final[dict[str, str]] = {
+    "behavior_cloakon": "behavior_cloakoff",
+    "behavior_holdfireon": "behavior_holdfireoff",
+    "morph_siegemode": "morph_unsiege",
+}
 _VERB_TAIL: Final[re.Pattern[str]] = re.compile(r"\s*(?:지어|뽑아|달아|생산|올려|연구|업그레이드|풀어|켜|해제)$")
 _GENERIC_NOUN: Final[dict[str, str]] = {"research": "연구", "train": "생산", "build": "건설"}
 _PREFIX: Final[dict[str, str]] = {
@@ -116,6 +134,11 @@ class Resolution:
 
 # --------------------------------------------------------------------------- names
 
+
+def _family(entry: cat.CommandEntry) -> str:
+    """Same-family key: a multi-level upgrade / add-on / caster variant of one thing is one family."""
+
+    return entry.id
 
 def command_title(entry: cat.CommandEntry) -> str:
     """Short Korean name of a command: its first alias without the trailing verb ("보병 공격력 업그레이드" -> 보병 공격력)."""
@@ -261,7 +284,8 @@ def decide_entry(
         text = _refusal_ko(entry, ev)
         if head in _PREREQUISITE_REASONS:
             needed = _needed_structures_ko(entry, ev.reason)
-            question = f"{text} — 먼저 {needed}을(를) 지을까요?" if needed else text
+            what = "기술실을 달" if head == "producer_needs_techlab" else f"{needed}을(를) 지을" if needed else ""
+            question = f"{text} — 먼저 {what}까요?" if what else text
             return Resolution(KIND_ASK, entry.id, reason=ev.reason, reason_ko=text, narration_ko=question, source=source)
         return Resolution(KIND_REFUSE, entry.id, reason=ev.reason, reason_ko=text, narration_ko=text, source=source)
     if len(groups) > 1:
@@ -303,6 +327,9 @@ def resolve_intent(
     if phrase_is_negated(phrase):
         return Resolution(KIND_NONE, reason="negated", narration_ko="부정 표현이라 실행하지 않았습니다.")
     scored = [(e, s) for e, s in cat.search_scored(phrase, limit=8) if s >= MIN_SCORE]
+    if _SWITCH_OFF_RE.search(phrase):
+        scored = [(cat.get_command(_OFF_COMMAND.get(e.id, e.id)), s) for e, s in scored]
+        scored = list({e.id: (e, s) for e, s in scored}.values())
     if category_hint:
         scored = [(e, s) for e, s in scored if e.category == category_hint]
     if not scored:
@@ -321,14 +348,22 @@ def resolve_intent(
         return decide_entry(tied[0], phrase, state, location=location, queue=queue, source="intent")
     decided = [decide_entry(e, phrase, state, location=location, queue=queue, source="intent") for e in tied]
     viable = [d for d in decided if d.kind == KIND_EXECUTE]
+    if len(viable) == 1 and len(viable) < len(decided):
+        # Another equally plausible reading is blocked by the game state.  Never silently run the lesser one: say what
+        # is blocked and ask whether the runnable one was meant.
+        only = viable[0]
+        blocked = next(d for d in decided if d is not only)
+        text = (
+            f"{blocked.reason_ko or command_title(cat.get_command(blocked.command_id)) + '은(는) 지금 할 수 없습니다'}"
+            f" — {command_title(cat.get_command(only.command_id))}(으)로 할까요?"
+        )
+        return Resolution(
+            KIND_ASK, only.command_id, alternatives=(only.command_id,), reason="blocked_reading", reason_ko=text,
+            narration_ko=text, source="intent",
+        )
     if len(viable) == 1:
         only = viable[0]
-        others = [d for d in decided if d is not only]
-        why = "; ".join(f"{command_title(cat.get_command(d.command_id))}은(는) 지금 할 수 없음" for d in others)
-        return Resolution(
-            KIND_EXECUTE, only.command_id, narration_ko=f"{only.narration_ko} — {why}", level=only.level, upgrade=only.upgrade,
-            issuer=only.issuer, location=only.location, queue=queue, ability=only.ability, note_ko=why, source="intent",
-        )
+        return only
     if len(viable) > 1:
         question, alts = _ask_which([cat.get_command(d.command_id) for d in viable])
         return Resolution(KIND_ASK, alts[0], alternatives=alts, reason="ambiguous", reason_ko=question, narration_ko=question, source="intent")
@@ -337,6 +372,48 @@ def resolve_intent(
         return Resolution(KIND_REFUSE, first.command_id, reason=first.reason, reason_ko=first.reason_ko, narration_ko=first.narration_ko)
     question, alts = _ask_which([cat.get_command(d.command_id) for d in decided])
     return Resolution(KIND_ASK, alts[0], alternatives=alts, reason="ambiguous", reason_ko=question, narration_ko=question, source="intent")
+
+
+def veto_macro_call(transcript: str, state: cat.CatalogState | None) -> Resolution | None:
+    """State veto for a macro train/build tool call: ``Resolution`` (ask) when the transcript names one train/build command
+    whose required structure is missing in ``state``; ``None`` otherwise (the macro layer proceeds)."""
+
+    if state is None or not str(transcript or "").strip() or _unsafe_text(transcript) or phrase_is_negated(transcript):
+        return None
+    scored = [(e, sc) for e, sc in cat.search_scored(transcript, limit=4) if sc >= MIN_SCORE and e.category in {"train", "build"}]
+    if not scored or (len(scored) > 1 and scored[0][1] - scored[1][1] < DECISIVE_MARGIN):
+        return None
+    result = decide_entry(scored[0][0], transcript, state, source="state_veto")
+    if result.kind == KIND_ASK and result.reason.partition(":")[0].strip() in STATE_VETO_REASONS:
+        return result
+    return None
+
+
+_CLOAK_CASTER_WORDS: Final[re.Pattern[str]] = re.compile(r"유령|고스트|밴시|ghost|banshee", re.IGNORECASE)
+
+
+def veto_vague_call(tool_arguments: Mapping[str, object], transcript: str) -> Resolution | None:
+    """Ask once instead of executing a model call that names nothing concrete (state-independent guards).
+
+    * macro ``tech_transition`` with no building and no production target ("테크 올려"): the macro layer would pick tech on
+      its own; the user did not say which.
+    * a bare cloak micro ("클로킹") whose transcript names neither ghost nor banshee: the model guessed the caster.
+    """
+
+    if not str(transcript or "").strip() or _unsafe_text(transcript) or phrase_is_negated(transcript):
+        return None
+    macro = tool_arguments.get("macro")
+    if isinstance(macro, Mapping) and macro.get("task_type") == "tech_transition":
+        if not macro.get("building_tasks") and not macro.get("production_targets"):
+            text = "어떤 테크를 올릴까요? (예: 군수공장 / 우주공항 / 공학 연구소)"
+            return Resolution(KIND_ASK, reason="vague_tech", reason_ko=text, narration_ko=text, source="vague_guard")
+    micro = tool_arguments.get("micro")
+    if isinstance(micro, (list, tuple)) and micro:
+        first = micro[0] if isinstance(micro[0], Mapping) else {}
+        if str(first.get("ability", "")) in {"ghost_cloak", "banshee_cloak"} and not _CLOAK_CASTER_WORDS.search(transcript):
+            text = "클로킹: 어느 쪽에 할까요? 밴시 / 유령"
+            return Resolution(KIND_ASK, reason="ambiguous_issuer", reason_ko=text, narration_ko=text, source="vague_guard")
+    return None
 
 
 def resolve_catalog_call(
@@ -353,7 +430,7 @@ def resolve_catalog_call(
     plain phrase and the resolver chooses.  Without a state snapshot nothing executes.
     """
 
-    if mode not in {"v1", "v2"}:
+    if mode not in {"v1", "v2", "v3"}:
         raise ValueError(f"unknown catalog mode {mode!r}")
     if not isinstance(catalog, Mapping):
         return Resolution(KIND_NONE, reason="no_catalog_call")
@@ -371,11 +448,25 @@ def resolve_catalog_call(
             KIND_NONE, command_id=command_id if mode == "v1" else "", reason="no_state",
             narration_ko="지금 게임 상태를 읽을 수 없어 실행하지 않았습니다.",
         )
-    if mode == "v1":
+    if mode in {"v1", "v3"}:
         try:
             entry = cat.get_command(command_id)
         except KeyError:
             return Resolution(KIND_NONE, reason="unknown_command", narration_ko="알 수 없는 명령입니다.")
+        if mode == "v3" and transcript:
+            # V3: the model named the command; the server checks that the HEARD words agree before anything runs.
+            heard = resolve_intent(transcript, state, location=location, queue=queue)
+            named = _family(entry)
+            agrees = heard.kind in {KIND_EXECUTE, KIND_ASK, KIND_REFUSE} and bool(heard.command_id) and (
+                _family(cat.get_command(heard.command_id)) == named
+                or any(_family(cat.get_command(a)) == named for a in heard.alternatives)
+            )
+            if not agrees:
+                question = f"'{transcript[:40]}'은(는) {command_title(entry)}이(가) 맞나요? 어떤 명령인지 다시 말씀해 주세요."
+                return Resolution(
+                    KIND_ASK, entry.id, reason="phrase_disagrees_with_command", reason_ko=question, narration_ko=question,
+                    source="command_id_checked",
+                )
         return decide_entry(entry, transcript or intent, state, location=location, queue=queue, source="command_id")
     phrase = intent or transcript
     result = resolve_intent(phrase, state, location=location or phrase_location(transcript), queue=queue)

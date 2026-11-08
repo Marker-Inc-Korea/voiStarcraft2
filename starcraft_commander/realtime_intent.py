@@ -401,7 +401,7 @@ CATALOG_MODE_ENV: Final[str] = "VOI_REALTIME_CATALOG_MODE"
 # off = shipped surface (V0); v1 = catalog.command_id enum (the model picks the id); v2 = catalog.intent phrase (the
 # server resolver picks the command from the live game state).  The default is the benchmark winner
 # (docs/voice-intent-benchmark.md R5-E); the env var overrides it for A/B runs.
-DEFAULT_CATALOG_MODE: Final[str] = "off"
+DEFAULT_CATALOG_MODE: Final[str] = "v2"
 
 
 def default_catalog_mode(env: Mapping[str, str] | None = None) -> str:
@@ -426,7 +426,7 @@ def _catalog_schema(mode: str) -> dict[str, object]:
         },
         "queue": {"type": "boolean", "description": "true only for a step chained with 다음에/이어서/and then."},
     }
-    if mode == "v1":
+    if mode in {"v1", "v3"}:
         return {
             "type": "object",
             "description": "ONE concrete game command from the CATALOG list in the instructions (id exactly as listed).",
@@ -727,16 +727,16 @@ def build_realtime_instructions(*, rules: bool = True, fewshot: bool = True, cat
     mode = _resolve_catalog_mode(catalog_mode)
     if rules:
         text += _INSTRUCTION_RULES if mode == "off" else _INSTRUCTION_RULES.replace(_RULE_13_UPGRADE_REFUSAL, "")
-        if mode == "v1":
+        if mode in {"v1", "v3"}:
             text += _catalog_rule_v1()
         elif mode == "v2":
             text += _CATALOG_RULE_V2
     if fewshot:
-        text += _INSTRUCTION_FEWSHOT
-        if mode == "v1":
+        if mode in {"v1", "v3"}:
             text += _CATALOG_FEWSHOT_V1
         elif mode == "v2":
             text += _CATALOG_FEWSHOT_V2
+        text += _INSTRUCTION_FEWSHOT
     return text
 
 
@@ -1257,7 +1257,9 @@ def _lower_catalog(
     others = [k for k in ("operations", "micro", "macro") if _has_content(args.get(k))]
     if others or any(_emergency_flags(args).values()):
         raise ValueError("catalog cannot be combined with operations, micro, macro or emergency in one call.")
-    mode = "v1" if _text(call.get("command_id"), "catalog.command_id") else "v2"
+    mode = "v2"
+    if _text(call.get("command_id"), "catalog.command_id"):
+        mode = "v3" if default_catalog_mode() == "v3" else "v1"
     resolution = RC.resolve_catalog_call(call, transcript, state, mode=mode)  # type: ignore[arg-type]
     if resolution.kind != RC.KIND_EXECUTE:
         message = resolution.narration_ko or resolution.reason_ko or "무엇을 할지 다시 말씀해 주세요."
