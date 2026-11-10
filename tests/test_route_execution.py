@@ -92,23 +92,38 @@ def test_decision_for_the_rig_executes_with_four_marines():
     assert len(rig.decision.unit_tags) == 4
 
 
+def _per_point(views, n_points, n_units):
+    """Group the raw requests by consecutive (ability, point, queue); python-sc2 may or may not combine units."""
+
+    groups = []
+    for view in views:
+        key = (view["ability_name"], view["pos"], view["queue"])
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(view)
+        else:
+            groups.append((key, [view]))
+    assert len(groups) == n_points, [g[0] for g in groups]
+    for _, group in groups:
+        assert sorted(t for v in group for t in v["unit_tags"]) == sorted(set(t for v in group for t in v["unit_tags"]))
+        assert len({t for v in group for t in v["unit_tags"]}) == n_units
+    return [g[1] for g in groups]
+
+
 def test_raw_requests_are_move_then_queued_moves_then_queued_final_move():
     rig = Rig()
     result = rig.start()
     assert result.ok, result
     rig.commit()
-    views = rig.views()
     route = rig.decision.route
-    assert len(views) == len(route.waypoints) + 1
-    assert all(v["ability_name"] == "MOVE_MOVE" for v in views)
-    assert [v["queue"] for v in views] == [False] + [True] * (len(views) - 1)
-    expected = [(p.x, p.y) for p in route.waypoints] + [(route.final.x, route.final.y)]
-    assert [v["pos"] for v in views] == pytest.approx(expected) or all(
-        v["pos"] == pytest.approx(e) for v, e in zip(views, expected)
-    )
     tags = sorted(rig.decision.unit_tags)
-    assert all(v["unit_tags"] == tags for v in views)
-    assert all(harness.target_shape_ok(v) for v in views)
+    groups = _per_point(rig.views(), len(route.waypoints) + 1, len(tags))
+    expected = [(p.x, p.y) for p in route.waypoints] + [(route.final.x, route.final.y)]
+    for index, (group, point) in enumerate(zip(groups, expected)):
+        assert all(v["ability_name"] == "MOVE_MOVE" for v in group)
+        assert all(v["queue"] is (index > 0) for v in group), (index, group)
+        assert all(v["pos"] == pytest.approx(point) for v in group)
+        assert sorted(t for v in group for t in v["unit_tags"]) == tags
+        assert all(harness.target_shape_ok(v) for v in group)
 
 
 def test_attack_final_is_a_queued_attack_order():
@@ -118,9 +133,11 @@ def test_attack_final_is_a_queued_attack_order():
     assert rig.decision.kind == "execute" and rig.decision.route.final.action == "attack"
     assert rig.start().ok
     rig.commit()
-    views = rig.views()
-    assert views[-1]["ability_name"] == "ATTACK_ATTACK" and views[-1]["queue"] is True
-    assert all(v["ability_name"] == "MOVE_MOVE" for v in views[:-1])
+    route = rig.decision.route
+    groups = _per_point(rig.views(), len(route.waypoints) + 1, len(rig.decision.unit_tags))
+    assert all(v["ability_name"] == "ATTACK" and v["ability_id"] == 3674 and v["queue"] is True for v in groups[-1])
+    assert all(v["pos"] == pytest.approx((route.final.x, route.final.y)) for v in groups[-1])
+    assert all(v["ability_name"] == "MOVE_MOVE" for g in groups[:-1] for v in g)
 
 
 def test_lease_is_taken_on_exactly_the_squad_tags_and_is_a_combat_group_lease():
