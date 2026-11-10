@@ -222,7 +222,36 @@ function validateBoardCards(input) {
     return { id: raw.id, name: raw.name.trim(), tier, stages, blockedReason: reason, sim: raw.sim === true };
   });
 }
+// ---- minimap sketch (electron/sketch/*) ---------------------------------------------------
+const SKETCH_ACTIONS = Object.freeze(["calibrate", "reset-calibration", "retry-helper", "request-capture"]);
+function validateSketchStrokes(input) {
+  plainObject(input, "sketch strokes");
+  if (Object.keys(input).some(key => key !== "strokes")) throw new TypeError("unexpected sketch strokes field");
+  if (!Array.isArray(input.strokes)) throw new TypeError("sketch strokes must be an array");
+  if (!input.strokes.length) return { strokes: [] };
+  return { strokes: require("./sketch/payload.js").checkStrokes(input.strokes) };
+}
+function validateSketchCancel(input) {
+  plainObject(input, "sketch cancel");
+  return { reason: input.reason === "tap" ? "tap" : "esc" };
+}
+function validateSketchCalibration(input) {
+  plainObject(input, "sketch calibration");
+  if (input.action === "cancel") return { action: "cancel" };
+  if (input.action !== "save") throw new TypeError("sketch calibration action must be save|cancel");
+  const r = input.rect;
+  if (!r || typeof r !== "object" || !["x", "y", "w", "h"].every(k => Number.isFinite(r[k])) || r.w < 40 || r.h < 40 || r.w > 20000 || r.h > 20000) throw new TypeError("sketch calibration rect invalid");
+  return { action: "save", rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } };
+}
+function validateSketchAction(input) {
+  plainObject(input, "sketch action");
+  if (Object.keys(input).some(key => key !== "action")) throw new TypeError("unexpected sketch action field");
+  if (!SKETCH_ACTIONS.includes(input.action)) throw new TypeError(`sketch action must be one of ${SKETCH_ACTIONS.join("|")}`);
+  return { action: input.action };
+}
+
 module.exports = {
+  validateSketchStrokes, validateSketchCancel, validateSketchCalibration, validateSketchAction, SKETCH_ACTIONS,
   validateBoardCards, BOARD_MAX_CARDS, BOARD_TIERS, BOARD_STAGE_STATES,
   validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
   VOICE_STATES, OVERLAY_STATES, DOCK_MODES, ATTENTION_REASONS, MAX_AUDIO_CHUNK_BYTES,

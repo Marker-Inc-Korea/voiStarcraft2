@@ -315,7 +315,7 @@ function createSketchController(deps) {
     if (fallbackAccel && fallbackAccel !== s.fallbackShortcut) { unregisterGlobal(fallbackAccel); fallbackAccel = ""; fallbackOk = false; }
     if (s.enabled && !fallbackAccel) { fallbackAccel = s.fallbackShortcut; fallbackOk = registerGlobal(fallbackAccel, () => machine.toggle()); if (!fallbackOk) fallbackAccel = ""; }
     if (!s.enabled && fallbackAccel) { unregisterGlobal(fallbackAccel); fallbackAccel = ""; fallbackOk = false; }
-    if (s.enabled && started) { if (existsSync(helperPath) || helperStatus.state === "idle") helper.start(); if (!pollTimer) loop(); }
+    if (s.enabled && started) { if (existsSync(helperPath)) helper.start(); else { helperStatus = { state: "missing", reason: "" }; } if (!pollTimer) loop(); }
     if (!s.enabled) { helper.stop(); if (pollTimer) { clearTimer(pollTimer); pollTimer = null; } if (!calibrating) hideWindow(); }
     onStatus();
   }
