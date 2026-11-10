@@ -83,10 +83,18 @@ test("toggle cancel returns straight to idle; a real chord release does not end 
   machine.toggle(); machine.chord("up"); assert.equal(machine.state(), "active");
   machine.cancel("esc"); assert.deepEqual(kinds(log), ["start:toggle", "cancel:toggle:esc"]); assert.equal(machine.state(), "idle");
 });
-test("toggle is ignored while the chord is pending/active/blocked (one sketch at a time)", () => {
-  const { machine, log, advance } = rig();
-  machine.chord("down"); machine.toggle(); assert.deepEqual(log, []);
-  advance(200); machine.toggle(); assert.deepEqual(kinds(log), ["start:chord"]);
+test("toggle keys contain the chord modifiers: pressing the toggle while the chord is pending/blocked starts a toggled sketch; a running chord sketch is not hijacked", () => {
+  const a = rig();
+  a.machine.chord("down"); a.machine.toggle();
+  assert.deepEqual(kinds(a.log), ["start:toggle"]); a.advance(500); assert.deepEqual(kinds(a.log), ["start:toggle"], "the pending chord timer died");
+  const b = rig();
+  b.machine.chord("down"); b.advance(50); b.machine.interrupt(); b.machine.toggle();
+  assert.deepEqual(kinds(b.log), ["start:toggle"]);
+  b.machine.chord("up"); assert.equal(b.machine.state(), "active", "chord release does not end a toggled sketch");
+  b.machine.toggle(); assert.deepEqual(kinds(b.log), ["start:toggle", "end:toggle"]);
+  const c = rig();
+  c.machine.chord("down"); c.advance(200); c.machine.toggle();
+  assert.deepEqual(kinds(c.log), ["start:chord"], "toggle during a chord sketch is ignored");
 });
 test("disabled machine ignores everything", () => {
   const { machine, log, advance } = rig();

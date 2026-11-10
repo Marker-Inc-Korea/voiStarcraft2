@@ -7,7 +7,7 @@
 // disabling the feature, Esc) is a "cancel", never an "end".
 //   idle -> (chord down) pending -> (debounce) active -> (chord up) idle                 [end]
 //   pending/active + another key  -> blocked (active emits cancel:key) -> (chord up) idle
-//   idle -> (toggle) toggled -> (toggle) idle [end] | cancel() idle [cancel]
+//   idle/pending/blocked -> (toggle) toggled -> (toggle) idle [end] | cancel() idle [cancel]
 const DEFAULT_DEBOUNCE_MS = 120;
 
 function createChordMachine({ debounceMs = DEFAULT_DEBOUNCE_MS, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, onEvent = () => {} } = {}) {
@@ -38,9 +38,9 @@ function createChordMachine({ debounceMs = DEFAULT_DEBOUNCE_MS, now = Date.now, 
   }
   function toggle() {
     if (!enabled) return;
-    if (state === "idle") { state = "toggled"; emit("start", "toggle"); }
+    if (state === "idle" || state === "pending" || state === "blocked") { stopTimer(); state = "toggled"; emit("start", "toggle"); } // the toggle accelerator itself contains the chord modifiers
     else if (state === "toggled") { state = "idle"; emit("end", "toggle"); }
-    // pending/active/blocked: the physical chord owns the sketch
+    // active: a physical chord sketch is running and is not hijacked
   }
   function cancel(reason = "cancel") {
     if (state === "active") { state = "blocked"; emit("cancel", "chord", reason); } // the keys are still down: wait for the release

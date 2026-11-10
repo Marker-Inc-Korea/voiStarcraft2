@@ -78,3 +78,27 @@ test("hit-testing for the sketch window: only points inside the rect belong to t
   const rect = { x: 10, y: 10, w: 100, h: 100 };
   assert.equal(G.contains(rect, 10, 10), true); assert.equal(G.contains(rect, 110, 110), true); assert.equal(G.contains(rect, 111, 50), false);
 });
+
+test("windowFor: sketch mode is EXACTLY the rect; display mode pads the rect but stays inside the display (no off-screen window)", () => {
+  const d = { x: 0, y: 0, width: 1512, height: 982 };
+  const rect = { x: 10, y: 730, w: 240, h: 240 };
+  assert.deepEqual(G.windowFor(rect, d, 0), { bounds: rect, ox: 0, oy: 0 });
+  const padded = G.windowFor(rect, d, 32);
+  assert.deepEqual(padded.bounds, { x: 0, y: 698, w: 282, h: 284 });
+  assert.deepEqual([padded.ox, padded.oy], [10, 32], "the minimap frame sits at (ox,oy) inside the padded window");
+  assert.equal(padded.bounds.x + padded.ox, rect.x); assert.equal(padded.bounds.y + padded.oy, rect.y);
+});
+test("moveRect / resizeFromCorner: drag-to-fit keeps the minimap square and inside the display", () => {
+  const d = { x: 0, y: 0, width: 1000, height: 800 };
+  const r = { x: 100, y: 500, w: 200, h: 200 };
+  assert.deepEqual(G.moveRect(r, 50, -20, d), { x: 150, y: 480, w: 200, h: 200 });
+  assert.deepEqual(G.moveRect(r, -500, 500, d), { x: 0, y: 600, w: 200, h: 200 }, "clamped to the display");
+  const grown = G.resizeFromCorner(r, "br", { x: 360, y: 640 }, d);
+  assert.deepEqual([grown.x, grown.y, grown.w, grown.h], [100, 500, 260, 260], "anchor top-left stays; side follows the larger drag");
+  const tl = G.resizeFromCorner(r, "tl", { x: 60, y: 480 }, d);
+  assert.deepEqual([tl.x + tl.w, tl.y + tl.h, tl.w, tl.h], [300, 700, 240, 240], "anchor bottom-right stays");
+  const tiny = G.resizeFromCorner(r, "br", { x: 101, y: 501 }, d);
+  assert.ok(tiny.w >= G.MIN_SIDE && tiny.w === tiny.h);
+  const big = G.resizeFromCorner(r, "br", { x: 5000, y: 5000 }, d);
+  assert.ok(big.x + big.w <= 1000 && big.y + big.h <= 800 && big.w === big.h);
+});
