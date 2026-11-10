@@ -6,11 +6,10 @@
      mask-composite:add (source-over) => alpha = 1 - Π(1 - a_i), so corners blend seamlessly with no seam or gap.
    - .glow (depth) + .bloom (1.9x depth, lower opacity) are stacked with mix-blend-mode: screen. Note: blending is
      between these layers; a transparent window cannot blend against other apps' pixels, so brightness over a bright
-     backdrop comes from the saturated colours + bloom rather than from additive blending with the desktop.
-   Live state only: the hue rotation and the thinking breath run while the state is listening/thinking. With voice off nothing animates. */
+     backdrop comes from the saturated colours + bloom rather than from additive blending with the desktop. */
 :root { --edge-depth: 90px; --loop: 6s; --intensity: .95; --brightness: 1; --bloom-boost: 1; }
 html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; pointer-events: none; user-select: none; }
-.edge { position: fixed; inset: 0; opacity: 0; transition: opacity var(--dur-fast) var(--ease); isolation: isolate; }
+.edge { position: fixed; inset: 0; opacity: 0; transition: opacity 150ms ease-out; isolation: isolate; }
 body:not([data-state="off"]) .edge { opacity: 1; }
 
 .layer { position: absolute; inset: 0; overflow: hidden; --d: var(--edge-depth); mix-blend-mode: screen;
@@ -25,17 +24,16 @@ body:not([data-state="off"]) .edge { opacity: 1; }
 
 .spin { position: absolute; left: 50%; top: 50%; width: 160vmax; height: 160vmax; margin: -80vmax 0 0 -80vmax; will-change: transform;
   background: conic-gradient(from 0deg, #ff1744, #ff9100, #ffea00, #76ff03, #00e5ff, #2979ff, #d500f9, #ff4081, #ff1744);
-  animation: none; }
-body:not([data-state="off"]) .spin { animation: rotate var(--loop) linear infinite; }
+  animation: rotate var(--loop) linear infinite; }
 body[data-motion="off"] .spin, body[data-motion="off"] .edge { animation: none !important; }
 @keyframes rotate { to { transform: rotate(360deg); } }
 
-/* thinking: the same edge, dimmer and slower, with a slow breath */
+/* thinking: dimmer, slower, gently breathing */
 body[data-state="thinking"] { --loop: calc(var(--base-loop, 6s) * 2.3); }
 body[data-state="thinking"] .glow { opacity: calc(var(--intensity) * .44); }
 body[data-state="thinking"] .bloom { opacity: calc(var(--intensity) * .21); }
-body[data-state="thinking"] .edge { animation: breathe 3.2s var(--ease) infinite alternate; }
-@keyframes breathe { from { opacity: .6; } to { opacity: 1; } }
+body[data-state="thinking"] .edge { animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
   .spin { animation: none; }

@@ -1,9 +1,8 @@
 "use strict";
-// Optional decoration inside the glass panel (stars and nebula settings, both 0 by default), drawn on ONE transparent canvas
-// with additive blending so it tints the glass without making it opaque: 3-depth parallax starfield, 4-point flares,
-// shooting stars, faint constellation lines and soft drifting nebula clouds of the glass hue (60-90 s loop).
-// With stars and nebula at 0 nothing is drawn and no frame loop runs. Otherwise one rAF loop capped at ~30 fps, fully paused
-// while the bar is hidden, a single still frame under reduced motion.
+// Cosmic layers inside the glass panel, drawn on ONE transparent canvas with additive blending so they tint the glass
+// without making it opaque: 3-depth parallax starfield, 4-point flares, shooting stars, faint constellation lines, soft
+// drifting nebula clouds (60-90 s loop) and a thin aurora shimmer along the top edge.
+// One rAF loop capped at ~30 fps; fully paused while the bar is hidden; a single still frame under reduced motion.
 // Star density / speed / nebula / twinkle / meteors are live settings (VoiSpace.configure), independent of glass opacity.
 (function () {
   const Sky = window.VoiSky;
@@ -14,18 +13,17 @@
   let stars = [], edges = [];
   let meteor = null, meteorStart = 0, nextMeteorAt = 0;
   const rand = Sky.mulberry32(0x5eed);
-  let cfg = { enabled: true, stars: 0, speed: 0.4, nebula: 0, hue: 220, saturation: 0.06, twinkle: false, meteors: false, still: false, glassAlpha: 0.28 };
+  let cfg = { enabled: true, stars: 0.5, speed: 0.4, nebula: 0.5, hue: 250, saturation: 0.55, twinkle: true, meteors: true, still: false, glassAlpha: 0.28 };
   const still = () => osMotion.matches || cfg.still;
-  const drawable = () => cfg.enabled !== false && Sky.hasContent(cfg);
-  const visible = () => drawable() && document.body.dataset.revealed === "true" && !document.hidden;
+  const visible = () => cfg.enabled !== false && document.body.dataset.revealed === "true" && !document.hidden;
 
-  // Nebula clouds: one hue family (the 색조 slider), a few degrees apart. No hue-to-hue blends.
+  // Nebula clouds: violet / indigo / cyan / magenta, offsets from the user hue so the 색조 slider recolours the sky.
   const CLOUDS = [
-    { x: 0.14, y: 0.35, r: 0.62, dh: 6, l: 0.34, ax: 0.07, ay: 0.05, ps: 1.0 },
-    { x: 0.80, y: 0.20, r: 0.55, dh: -8, l: 0.30, ax: 0.06, ay: 0.07, ps: 0.8 },
-    { x: 0.52, y: 0.98, r: 0.66, dh: 10, l: 0.28, ax: 0.08, ay: 0.04, ps: 1.2 },
-    { x: 0.96, y: 0.82, r: 0.44, dh: -4, l: 0.26, ax: 0.05, ay: 0.06, ps: 0.9 },
-    { x: 0.40, y: 0.10, r: 0.38, dh: 0, l: 0.22, ax: 0.07, ay: 0.05, ps: 1.1 },
+    { x: 0.14, y: 0.35, r: 0.62, dh: 10, l: 0.34, ax: 0.07, ay: 0.05, ps: 1.0 },
+    { x: 0.80, y: 0.20, r: 0.55, dh: -60, l: 0.30, ax: 0.06, ay: 0.07, ps: 0.8 },
+    { x: 0.52, y: 0.98, r: 0.66, dh: 72, l: 0.28, ax: 0.08, ay: 0.04, ps: 1.2 },
+    { x: 0.96, y: 0.82, r: 0.44, dh: -20, l: 0.26, ax: 0.05, ay: 0.06, ps: 0.9 },
+    { x: 0.40, y: 0.10, r: 0.38, dh: 130, l: 0.22, ax: 0.07, ay: 0.05, ps: 1.1 },
   ];
   const LOOP_SECONDS = 75; // one full drift cycle of the clouds
 
@@ -47,7 +45,7 @@
   function drawNebula(t, k) {
     if (k.nebula <= 0.01) return;
     const span = Math.max(width, height);
-    const sat = Math.round(20 + cfg.saturation * 60);
+    const sat = Math.round(35 + cfg.saturation * 60);
     const phase = (t / LOOP_SECONDS) * Math.PI * 2;
     for (const c of CLOUDS) {
       const hue = (cfg.hue + c.dh + 360) % 360;
@@ -57,14 +55,35 @@
       // Two stacked radial gradients per cloud: a wide soft body and a tighter bright core (layered, blurred look).
       const body = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
       body.addColorStop(0, `hsla(${hue}, ${sat}%, ${c.l * 100}%, ${0.40 * k.nebula})`);
-      body.addColorStop(0.5, `hsla(${hue}, ${sat * 0.9}%, ${c.l * 62}%, ${0.17 * k.nebula})`);
+      body.addColorStop(0.5, `hsla(${hue + 20}, ${sat * 0.9}%, ${c.l * 62}%, ${0.17 * k.nebula})`);
       body.addColorStop(1, `hsla(${hue}, 80%, 10%, 0)`);
       ctx.fillStyle = body; ctx.fillRect(0, 0, width, height);
       const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 0.38);
-      core.addColorStop(0, `hsla(${hue}, ${sat}%, ${c.l * 130}%, ${0.22 * k.nebula})`);
+      core.addColorStop(0, `hsla(${hue - 14}, ${sat}%, ${c.l * 130}%, ${0.22 * k.nebula})`);
       core.addColorStop(1, `hsla(${hue}, 80%, 20%, 0)`);
       ctx.fillStyle = core; ctx.fillRect(0, 0, width, height);
     }
+  }
+
+  // Aurora / cosmic-dust shimmer hugging the panel's top edge: a slow horizontal ribbon of two hues.
+  function drawAurora(t, k) {
+    if (k.aurora <= 0.02) return;
+    const h = Math.min(height * 0.45, 70);
+    const shift = still() ? 0.3 : (t * 0.018) % 1;
+    const g = ctx.createLinearGradient(0, 0, width, 0);
+    const hue = cfg.hue;
+    for (let i = 0; i <= 6; i += 1) {
+      const p = i / 6;
+      const wave = 0.5 + 0.5 * Math.sin((p + shift) * Math.PI * 2);
+      g.addColorStop(p, `hsla(${(hue + 80 * wave + 330) % 360}, 90%, 62%, ${(0.05 + 0.13 * wave) * k.aurora})`);
+    }
+    const v = ctx.createLinearGradient(0, 0, 0, h);
+    v.addColorStop(0, "rgba(255,255,255,1)"); v.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.save();
+    ctx.fillStyle = g; ctx.fillRect(0, 0, width, h);
+    ctx.globalCompositeOperation = "destination-in"; // fade the ribbon out toward the middle
+    ctx.fillStyle = v; ctx.fillRect(0, 0, width, h);
+    ctx.restore();
   }
 
   function flare(x, y, size, a, hue) {
@@ -128,9 +147,9 @@
     const k = Sky.intensity({ stars: cfg.stars, nebula: cfg.nebula, glassAlpha: cfg.glassAlpha });
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, width, height);
-    if (!drawable()) { meteor = null; return; }
     ctx.globalCompositeOperation = "lighter"; // additive: never darkens, never makes the glass opaque
     drawNebula(t, k);
+    drawAurora(t, k);
     drawStars(t, k);
     drawMeteor(now, k);
     ctx.globalCompositeOperation = "source-over";

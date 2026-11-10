@@ -55,7 +55,7 @@
     reportRect();
   }
 
-  // ---------- shape: one pure rounded path (hud_shape.js) drives the clip, the outline and main's hit-test ----------
+  // ---------- shape: one pure rounded path (hud_shape.js) drives the clip, the outline/glow and main's hit-test ----------
   // bottom dock = slanted bar with all four corners rounded; every other dock = plain rounded rectangle.
   let lastShapeKey = "";
   function applyShape() {
@@ -73,7 +73,7 @@
     $("panel").style.clipPath = shape.clipPath;
     const outline = $("outline");
     outline.setAttribute("width", String(width)); outline.setAttribute("height", String(height)); outline.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    $("outline-poly").setAttribute("d", shape.path); $("outline-edge").setAttribute("d", shape.path);
+    $("outline-poly").setAttribute("d", shape.path); $("outline-glow").setAttribute("d", shape.path);
     // content stays inside the slanted sides and off the rounded corners: the bar is near the wide base, the settings reach the far edge
     const along = dock === "bottom" || dock === "top";
     const depth = along ? height : width;

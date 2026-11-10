@@ -10,10 +10,12 @@
 <body data-dock="bottom" data-revealed="false" data-voice="off" data-settings="closed" data-motion="on" data-skin="cosmic">
   <div class="handle" id="handle" aria-hidden="true"></div>
 
-  <!-- .hud = the positioned/sliding box; .panel = the rounded-clipped glass; #outline = unclipped rim (+ optional second hairline) of the same polygon -->
+  <!-- .hud = the positioned/sliding box; .panel = the rounded-clipped glass; #outline = unclipped rim + glow of the same polygon -->
   <div class="hud" id="hud">
     <section class="panel" id="panel">
       <canvas id="space" aria-hidden="true"></canvas>
+      <div class="sheen" aria-hidden="true"></div>
+      <div class="sweep" aria-hidden="true"></div>
       <div class="term-fx" aria-hidden="true"></div>
 
       <div class="panel-body" id="panel-body">
@@ -25,8 +27,9 @@
         <footer class="bar" id="bar">
           <button class="orb" id="orb" type="button" aria-pressed="false" aria-label="음성">
             <span class="orb-halo" aria-hidden="true"></span>
+            <span class="orb-ring" aria-hidden="true"><i class="moon"></i></span>
             <span class="orb-core" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             </span>
             <i class="led" aria-hidden="true"></i>
           </button>
@@ -51,7 +54,7 @@
       <defs>
         <linearGradient id="rim-grad" x1="0" y1="0" x2="1" y2="1"><stop class="rim-a" offset="0"/><stop class="rim-b" offset=".4"/><stop class="rim-c" offset=".75"/><stop class="rim-d" offset="1"/></linearGradient>
       </defs>
-      <path id="outline-edge" class="outline-edge"/>
+      <path id="outline-glow" class="outline-glow"/>
       <path id="outline-poly" class="outline-poly"/>
     </svg>
   </div>

@@ -1246,7 +1246,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.loadHTMLString(
-            "<!doctype html><meta charset='utf-8'><style>:root{color-scheme:dark light}body{margin:0;display:grid;place-items:center;height:100vh;background:#141415;color:#ededed;font:500 15px -apple-system,sans-serif}p{padding:24px}@media(prefers-color-scheme:light){body{background:#fafafa;color:#171717}}</style><p>voiStarcraft2 조종석 준비 중</p>",
+            "<!doctype html><meta charset='utf-8'><style>body{margin:0;display:grid;place-items:center;height:100vh;background:#07171d;color:#65f3df;font:700 18px -apple-system,sans-serif}p{padding:24px}</style><p>voiStarcraft2 조종석을 준비하고 있습니다...</p>",
             baseURL: nil
         )
         window = NSWindow(
@@ -1772,7 +1772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
         webView?.loadHTMLString(
-            "<!doctype html><meta charset='utf-8'><style>:root{color-scheme:dark light}body{margin:0;display:grid;place-items:center;height:100vh;background:#141415;color:#ededed;font:400 14px -apple-system,sans-serif}p{max-width:640px;padding:28px;line-height:1.6;border-left:2px solid oklch(70.4% .191 22.2)}@media(prefers-color-scheme:light){body{background:#fafafa;color:#171717}}</style><p>\\(encoded)</p>",
+            "<!doctype html><meta charset='utf-8'><style>body{margin:0;display:grid;place-items:center;height:100vh;background:#1c0b0b;color:#ffd8d3;font:700 16px -apple-system,sans-serif}p{max-width:640px;padding:28px;line-height:1.6}</style><p>\\(encoded)</p>",
             baseURL: nil
         )
     }

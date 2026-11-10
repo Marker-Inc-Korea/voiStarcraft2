@@ -37,14 +37,15 @@
     return node("g", { class: "layer-strokes", opacity: String(alpha) }, children);
   }
 
-    function finalIcon(kind) {
+  const SWORD = [["M-6 6 L5 -5", "stroke"], ["M2 -8 L8 -8 L8 -2", "stroke"], ["M-8 4 L-4 8 M-9 9 L-6 6", "stroke"]];
+  function finalIcon(kind) {
     if (kind === "sword") return [node("path", { class: "final-icon", d: "M-6 6 L6 -6 M3 -7 L7 -7 L7 -3 M-9 3 L-3 9 M-8 8 L-5 5" })];
     return [node("path", { class: "final-icon", d: "M-4 8 V-8 L7 -4 L-4 0" }), node("path", { class: "final-icon", d: "M-4 -8 V-8", "stroke-width": "2.4" })];
   }
   function routeLayer(route, layout) {
     const children = [];
     const all = route.polyline.map(p => toPx(layout, p.nx, p.ny));
-    children.push(node("polyline", { class: "route-under", points: pts(all) }), node("polyline", { class: "route-line", points: pts(all) }));
+    children.push(node("polyline", { class: "route-line", points: pts(all) }));
     const reachedPts = route.waypoints.filter(w => w.reached).map(w => toPx(layout, w.nx, w.ny));
     if (route.final.reached) reachedPts.push(toPx(layout, route.final.nx, route.final.ny));
     if (reachedPts.length) children.push(node("polyline", { class: "route-line-done", points: pts(reachedPts) }));
