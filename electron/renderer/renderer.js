@@ -6,6 +6,7 @@
 (function () {
   const api = window.commander;
   const { normalizeTier } = window.VoiStages;
+  const RouteModel = window.VoiRouteModel, SketchMessages = window.VoiSketchMessages;
   const BoardCards = window.VoiBoardCards, HudShape = window.VoiHudShape, Skins = window.VoiSkins;
   const S = window.VoiSettings;
   const i18n = window.VoiI18n.create("ko");
@@ -22,6 +23,7 @@
     settings: S.defaults(), env: { shortcut: {}, displays: [], model: "", platform: "", vibrancySupported: false, baseUrl: "" },
     tab: "glass", latencies: [], level: 0, devices: [], server: { state: "checking" }, recording: false, resetArmed: false,
   };
+  const routeModel = RouteModel.createRouteModel();
   const EMERGENCY = ["retreat", "hold", "stop"];
   const EMERGENCY_TEXT = { ko: { retreat: "긴급 후퇴", hold: "긴급 홀드", stop: "긴급 멈춤" }, en: { retreat: "emergency retreat now", hold: "emergency hold position", stop: "emergency stop" } };
   body.dataset.platform = api.platform === "darwin" ? "darwin" : "other";
@@ -101,7 +103,17 @@
   const attentionSeen = new Map();
   let lastPublished = "";
   function refreshBoard() {
-    const { cards, open, views } = BoardCards.cardsFor(state.cards, state.status, { fallbackName: card => (card.source === "voice" ? (card.listening ? t("listening") : "…") : "") });
+    const { cards, open: openCommands, views } = BoardCards.cardsFor(state.cards, state.status, { fallbackName: card => (card.source === "voice" ? (card.listening ? t("listening") : "…") : "") });
+    // The drawn route is one more operation card (route_plan/route_progress/agent_cursor from the backend; stages move only on those facts).
+    const runtimeKind = ((state.status && state.status.direct_runtime) || {}).kind;
+    const routeCard = routeModel.card({ sim: runtimeKind === "dry_run_fake_bot" });
+    let open = openCommands;
+    if (routeCard) {
+      const { open: routeOpen, ...published } = routeCard;
+      cards.unshift(published);
+      if (cards.length > BoardCards.MAX_CARDS) cards.length = BoardCards.MAX_CARDS;
+      if (routeOpen) open += 1;
+    }
     for (const { card, view } of views) notifyAttention(card, view);
     state.openOps = open;
     renderOps(cards.length, open);
@@ -204,6 +216,9 @@
     } else if (event.type === "dock-state") applyDock(event);
     else if (event.type === "settings") applyEnvelope(event);
     else if (event.type === "emergency") foldEmergency(event); // a global shortcut fired in main
+    else if (event.type === "sketch-result") showSketchLine(event);
+    else if (event.type === "route-event") onRouteEvent(event.event);
+    else if (event.type === "route-reset") { routeModel.resetSeq(); }
     else if (event.type === "session") { state.env.model = event.model || state.env.model; if (state.dock.settingsOpen) renderSettings(); }
     else if (event.type === "transcript") {
       let card = voiceCards.get(event.turn);
@@ -224,6 +239,20 @@
       renderVoice(); refreshBoard(); pokeSoon();
       if (state.dock.settingsOpen && state.tab === "voice") renderSettings();
     }
+  }
+
+  // ---------- minimap sketch: result line + route progress ----------
+  // The answer to a drawing is shown in the one-line transcript (what the agent understood / asks / refused / did NOT do).
+  function showSketchLine(event) {
+    state.transcript = { text: String(event.text || ""), partial: false };
+    renderVoice();
+    if (event.kind === "ask" || event.kind === "refuse" || event.kind === "none" || event.kind === "invalid" || event.kind === "failed" || event.kind === "cancel") api.dock.attention("stage");
+  }
+  function onRouteEvent(event) {
+    if (!event || typeof event !== "object") return;
+    routeModel.ingest(event);
+    if (event.kind === "route_plan" && event.narration_ko) { state.transcript = { text: String(event.narration_ko), partial: false }; renderVoice(); }
+    refreshBoard();
   }
 
   // ---------- mic / voice ----------
@@ -274,7 +303,7 @@
   }
 
   // ---------- settings panel (generated from the schema; words, sliders with numbers, toggles; no prose) ----------
-  const TABS = ["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : []), "server", "reset"];
+  const TABS = ["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : []), ...(S.SCHEMA.sketch ? ["sketch"] : []), "server", "reset"];
   let pending = {}, pendingTimer = 0;
   function patch(group, key, value) {
     state.settings[group][key] = value; // optimistic: the bar updates before the round trip
@@ -358,7 +387,7 @@
       if (state.recording !== id) return;
       event.preventDefault();
       if (event.key === "Escape") { state.recording = false; renderSettings(); return; }
-      const accelerator = acceleratorFrom(event);
+      const accelerator = acceleratorFrom(event, group === "sketch");
       if (!accelerator) return;
       const check = await api.settings.checkShortcut(accelerator).catch(() => ({ ok: false }));
       state.recording = false;
@@ -383,6 +412,27 @@
       return rowFor("board", key);
     });
   }
+  // Minimap tab: key watcher + permissions + position of the SC2 minimap (calibration). Statuses and their Korean explanations come
+  // from main's real state (helper supervisor, systemPreferences screen access, stored rect), never from assumptions.
+  function note(text) { return h("div", { class: "row note" }, h("p", { class: "note-text", text })); }
+  function tabSketch() {
+    const info = state.env.sketch;
+    const rows = [rowFor("sketch", "enabled"), row(t("sketch_fallbackShortcut"), h("div", { class: "ctl" }, shortcutButton("sketch", "fallbackShortcut"), info && info.fallback && !info.fallback.registered && state.settings.sketch.enabled ? h("output", { class: "status-word", "data-state": "bad", text: t("em_nokey") }) : null)), rowFor("sketch", "captureImage")];
+    if (!info) return rows;
+    const helperState = info.helper.state === "ok" ? "ok" : info.helper.state === "starting" ? "checking" : "bad";
+    const retry = h("button", { class: "btn", type: "button", text: t("retry") });
+    retry.addEventListener("click", () => api.sketch.action("retry-helper").then(next => { state.env.sketch = next; renderSettings(); }).catch(() => {}));
+    rows.push(row(t("sketch_helper"), h("div", { class: "ctl" }, h("output", { class: "status-word", "data-state": helperState, text: info.helper.word }), info.helper.state === "ok" ? null : retry)), note(info.helper.text));
+    const capture = h("button", { class: "btn", type: "button", text: t("retry") });
+    capture.addEventListener("click", () => api.sketch.action("request-capture").then(next => { state.env.sketch = next; renderSettings(); }).catch(() => {}));
+    rows.push(row(t("sketch_capture"), h("div", { class: "ctl" }, h("output", { class: "status-word", "data-state": info.capture.word === "사용 가능" ? "ok" : info.capture.word === "꺼짐" ? "checking" : "bad", text: info.capture.word }), info.capture.permission !== "granted" && info.capture.enabled ? capture : null)), note(info.capture.text));
+    const fit = h("button", { class: "btn", type: "button", text: t("fit") });
+    fit.addEventListener("click", () => api.sketch.action("calibrate").catch(() => {}));
+    const reset = h("button", { class: "btn", type: "button", text: t("fitReset") });
+    reset.addEventListener("click", () => api.sketch.action("reset-calibration").then(next => { state.env.sketch = next; renderSettings(); }).catch(() => {}));
+    rows.push(row(t("sketch_position"), h("div", { class: "ctl" }, h("output", { class: "status-word", "data-state": info.calibration.calibrated ? "ok" : "checking", text: info.calibration.word }), fit, info.calibration.calibrated ? reset : null)), note(info.calibration.text));
+    return rows;
+  }
   function tabVoice() {
     const select = h("select", { "aria-label": t("voice_device") }, h("option", { value: "", text: t("defaultDevice") }), ...state.devices.map(d => h("option", { value: d.deviceId, text: (d.label || d.deviceId).slice(0, 36), selected: d.deviceId === state.settings.voice.device })));
     select.addEventListener("change", async () => { patch("voice", "device", select.value); await restartMic(); });
@@ -401,10 +451,12 @@
       row(t("voice_latency"), h("div", { class: "ctl lat" }, h("output", { text: `${t("lat_speech")} ${avg("speech_end_to_tool_call") ?? "—"} ms` }), h("output", { text: `${t("lat_publish")} ${avg("tool_call_to_publish") ?? "—"} ms` }), h("output", { class: "dim", text: `n=${lat.length}` }))),
     ];
   }
-  function acceleratorFrom(event) {
+  // literal: keep Control and Command distinct (the sketch fallback is Control+Option+key; CommandOrControl would become Cmd on a Mac)
+  function acceleratorFrom(event, literal) {
     if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return "";
     const mods = [];
-    if (event.metaKey || event.ctrlKey) mods.push("CommandOrControl");
+    if (literal) { if (event.ctrlKey) mods.push("Control"); if (event.metaKey) mods.push("Command"); }
+    else if (event.metaKey || event.ctrlKey) mods.push("CommandOrControl");
     if (event.altKey) mods.push("Alt");
     if (event.shiftKey) mods.push("Shift");
     if (!mods.length) return "";
@@ -440,9 +492,9 @@
       });
       return b;
     };
-    return [row(t("reset_all"), h("div", { class: "ctl" }, make(t("reset_all"), undefined))), ...["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : [])].map(group => row(t(`tab_${group}`), h("div", { class: "ctl" }, make(t(`tab_${group}`), group))))];
+    return [row(t("reset_all"), h("div", { class: "ctl" }, make(t("reset_all"), undefined))), ...["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : []), ...(S.SCHEMA.sketch ? ["sketch"] : [])].map(group => row(t(`tab_${group}`), h("div", { class: "ctl" }, make(t(`tab_${group}`), group))))];
   }
-  const TAB_BUILDERS = { glass: tabGlass, layout: tabLayout, rainbow: tabRainbow, voice: tabVoice, emergency: tabEmergency, board: tabBoard, server: tabServer, reset: tabReset };
+  const TAB_BUILDERS = { glass: tabGlass, layout: tabLayout, rainbow: tabRainbow, voice: tabVoice, emergency: tabEmergency, board: tabBoard, sketch: tabSketch, server: tabServer, reset: tabReset };
   function renderSettings() {
     if (!state.dock.settingsOpen) return;
     const tabs = $("tabs");
