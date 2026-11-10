@@ -40,11 +40,11 @@ that cannot be registered shows `키불가` in settings; it is never silent. Reg
 
 ### Skins (유리 > 스킨)
 
-`cosmic` (우주): the glass + starfield/nebula described below, adapted to the rounded shape. `terminal` (터미널): StarCraft
+`cosmic` (우주): graphite glass (the default look; the starfield/nebula below are opt-in sliders, off by default). `terminal` (터미널): StarCraft
 in-game computer console: near-black translucent panel, phosphor green (`#2cff7a`) monospace (`SF Mono`/Menlo/IBM Plex Mono),
-scanlines, faint CRT glow/vignette/flicker, blinking block cursor (`> 명령_`) and green status LEDs; geometry is rounded like the cosmic skin (the green/black look is colour and
-effect only, never angular corners). Both skins share opacity/blur/hue settings, reduced-motion support and the rainbow edge overlay. The
-terminal text scrim/glow are computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
+static scanlines, a block cursor (`> 명령_`) that blinks only while the empty input has focus, and green status LEDs that blink only while
+listening/thinking; geometry is rounded like the cosmic skin. Both skins share opacity/blur/hue settings, reduced-motion support and the rainbow
+edge overlay. The terminal text scrim is computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
 live (no reload) and persisted (`glass.skin`).
 
 ## Minimap route sketch (hold Control+Option, draw on the SC2 minimap)
@@ -82,26 +82,23 @@ strokes stay visible, faded, until a `route_plan` arrives (then the planned rout
 - **Smoke**: `npx electron smoke/route_shots.js [outDir]` headless render of both skins (no pointer). `npx electron smoke/sketch_probe.js` is the supervisor's
   real-pointer probe (simulated chord -> real helper -> real OS drag; a downstream witness tap proves inside presses are consumed and outside clicks pass; the frontmost app is sampled every 100 ms); it refuses to run when `CGSSessionScreenIsLocked` is 1 (two S), the console is locked or the capture is dark.
 
-## Design language (Apple HIG + Aside tokens)
+## Design language
 
-`renderer/tokens.css` is the single token layer shared by the HUD (`style.css`) and the tactical board (`board/board.css`): corner scale
-with a 1.4 squircle factor (`--radius-md..3xl`, `--radius-pill`), 4 px spacing unit, blur steps 4/8/12/16/24/64, in-out and out easings,
-a neutral oklch palette with the .85/.55/.15/.10 alpha ladder (dark default; light via `prefers-color-scheme`), a layered low-alpha
-shadow scale and a hairline material edge (1 px border at .10 + inner top highlight). Every surface is a rounded rectangle or a pill:
-settings use a segmented tab control and grouped inset lists with hairline separators, the gear is a fully round "liquid glass" pill. The HUD silhouette itself
-(clip-path) belongs to `hud_shape.js`. The terminal skin only re-declares the colour tokens (phosphor green, monospace) and adds
-scanline/glow effects, never angular geometry. `test/ui_tokens.test.js` guards against `clip-path: polygon` / square corners in the CSS.
+Direction and rules: `docs/design-direction.md` (an unslop pass, method by [heydamir/unslop](https://github.com/heydamir/unslop), CC BY 4.0).
+`renderer/tokens.css` is the single token layer shared by the HUD, the tactical board, the sketch window and the overlay: corner scale with a
+1.4 squircle factor, 4 px spacing unit, blur steps 4/8/12/16/24/64, ONE easing (`--ease`), weights 400/500/600, a neutral oklch palette with
+the .85/.55/.15/.10 alpha ladder (dark default; light via `prefers-color-scheme`), one fixed accent (`--accent`, console cyan, independent of the
+glass hue) used for the route line, the selection and the live count only, and a hairline material edge. No coloured glows, no colour washes, no
+looping motion on things that are not live. The HUD silhouette (clip-path) belongs to `hud_shape.js`. `test/ui_tokens.test.js`,
+`test/board_view.test.js` and `test/sketch_overlay_style.test.js` guard against square corners, glows and idle loops creeping back.
 The system font stack (SF on macOS) is used; no font files are vendored.
 
 ## Cosmic glass (skin 우주)
 
-Inside the panel, on one transparent canvas drawn additively (`lighter` + `mix-blend-mode: plus-lighter`, never opaque):
-3-depth parallax starfield (twinkle, 4-point flares, a shooting star every ~8-14 s), faint constellation lines, drifting
-nebula clouds (75 s loop, recoloured by 색조) and an aurora shimmer on the top edge. Stars/nebula use their own sliders
-(별 / 별 속도 / 성운 / 반짝임 / 유성), so they stay visible at low glass opacity. Finish: 1px white→violet→cyan gradient rim,
-inner highlight, starlight glow, hover specular sweep; the mic orb is a small planet with an orbiting ring and moon; rail
-dots are tiny stars (done = bright halo, active = pulsing flare, blocked = red dwarf, sim = hollow dashed). One rAF loop
-capped at ~30 fps, paused while the bar is collapsed, a single still frame under reduced motion. Pure model: `renderer/sky.js`.
+Graphite glass by default (색조 220°, 채도 6 %). Optional decoration on one transparent canvas (`renderer/space.js`, pure model `renderer/sky.js`):
+a parallax starfield (별 / 별 속도 / 반짝임 / 유성) and nebula clouds (성운). All of them default to off; with 별 and 성운 at 0 the canvas is
+cleared once and no animation loop runs. When on: one rAF loop capped at ~30 fps, paused while the bar is collapsed, a single still frame under
+reduced motion. The mic is a flat round control; its ring shows the voice state (rainbow while listening, an accent arc while thinking).
 
 ## Multi-display
 
