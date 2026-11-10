@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>voi sketch</title><link rel="stylesheet" href="./sketch.css"></head>
+<body data-skin="cosmic" data-mode="idle" data-motion="on">
+  <div id="stage" class="stage">
+    <div id="frame" class="frame" aria-hidden="true"><i class="c tl"></i><i class="c tr"></i><i class="c bl"></i><i class="c br"></i></div>
+    <svg id="svg" class="svg" aria-hidden="true"></svg>
+    <div id="cursor" class="ghost" data-action="move" hidden aria-hidden="true">
+      <svg viewBox="-16 -16 32 32" width="32" height="32"><g class="g-move"><path d="M-3 -11 L9 7 L2 5 L-1 12 Z"/></g><g class="g-attack"><circle r="8"/><path d="M0 -13V-4M0 4V13M-13 0H-4M4 0H13"/></g><g class="g-select"><rect x="-9" y="-9" width="18" height="18" rx="3"/><path d="M-4 0L-1 3L5 -4"/></g></svg>
+      <span id="cursor-label" class="ghost-label"></span>
+    </div>
+  </div>
+  <section id="calib" class="calib" hidden>
+    <div id="calib-rect" class="calib-rect"><i class="h tl" data-corner="tl"></i><i class="h tr" data-corner="tr"></i><i class="h bl" data-corner="bl"></i><i class="h br" data-corner="br"></i><span class="calib-tag">미니맵</span></div>
+    <div class="calib-bar"><span id="calib-text" class="calib-text">미니맵 위치</span><button id="calib-save" type="button">저장</button><button id="calib-default" type="button">기본값</button><button id="calib-cancel" type="button">취소</button></div>
+  </section>
+  <script src="../geometry.js"></script>
+  <script src="../strokes.js"></script>
+  <script src="../route_model.js"></script>
+  <script src="./view.js"></script>
+  <script src="./sketch.js"></script>
+</body></html>
