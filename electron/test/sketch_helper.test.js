@@ -84,3 +84,21 @@ test("quiet period resets the crash counter (a long-running helper that dies onc
   procs[procs.length - 1].emit("exit", 1, null); advance(10000);
   assert.notEqual(sup.status().state, "failed");
 });
+
+test("mouse and capture messages from the helper are delivered; accessibility status is tracked", () => {
+  const got = [];
+  const { sup, procs, feed } = rig({ deps: { onMouse: m => got.push(["mouse", m]), onCapture: s => got.push(["capture", s]), onAccessibility: ok => got.push(["ax", ok]) } });
+  sup.start();
+  feed(procs[0], '{"status":"ready"}\n{"accessibility":true}\n{"capture":"on"}\n{"mouse":"down","x":10,"y":20,"t":5}\n{"mouse":"drag","x":11,"y":21,"t":6}\n{"mouse":"bogus","x":1,"y":1}\n{"mouse":"up","x":12,"y":22,"t":7}\n{"capture":"off"}\n{"accessibility":false}\n{"capture":"unavailable"}\n');
+  assert.deepEqual(got, [["ax", true], ["capture", "on"], ["mouse", { kind: "down", x: 10, y: 20, t: 5 }], ["mouse", { kind: "drag", x: 11, y: 21, t: 6 }], ["mouse", { kind: "up", x: 12, y: 22, t: 7 }], ["capture", "off"], ["ax", false], ["capture", "unavailable"]]);
+});
+test("send() writes one line to the helper's stdin; false when it is not running or has no stdin", () => {
+  const { sup, procs } = rig();
+  assert.equal(sup.send('{"capture":true}\n'), false, "not started");
+  sup.start();
+  assert.equal(sup.send('{"capture":true}\n'), false, "no stdin pipe");
+  const written = []; procs[0].stdin = { write: line => { written.push(line); return true; }, on() {} };
+  assert.equal(sup.send('{"capture":true}\n'), true); assert.deepEqual(written, ['{"capture":true}\n']);
+  procs[0].emit("exit", 1, null);
+  assert.equal(sup.send("x"), false);
+});
