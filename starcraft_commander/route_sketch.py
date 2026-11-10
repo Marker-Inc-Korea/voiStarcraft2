@@ -850,13 +850,26 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
             if not frame_path or math.dist(frame_path[-1], p) > 1e-9:
                 frame_path.append(p)
     # ---- chained path strokes must be contiguous (end of one ~ start of the next); two strokes that both start at the
-    # squad are two routes, never a chain
-    chain = [(_xy(strokes[i])[::-1] if i in sem.reversed_strokes else _xy(strokes[i])) for i in sem.path_strokes]
-    for before, after in zip(chain, chain[1:]):
-        a_end = frame_to_world(before[-1][0], before[-1][1], world)
-        b_start = frame_to_world(after[0][0], after[0][1], world)
-        if a_end is None or b_start is None or math.dist(a_end, b_start) > CHAIN_GAP:
+    # squad are two routes, never a chain.  A 'reversed' flag is only honoured when continuity holds WITH it and not
+    # without it (otherwise the orientation is ambiguous: ask).
+    chain: list[list[tuple[float, float]]] = []
+    for position, index in enumerate(sem.path_strokes):
+        pts = _xy(strokes[index])
+        if index in sem.reversed_strokes and position > 0:
+            prev_end = chain[-1][-1]
+            gap_as_drawn = _frame_gap(prev_end, pts[0], world)
+            gap_reversed = _frame_gap(prev_end, pts[-1], world)
+            if gap_reversed > CHAIN_GAP or gap_as_drawn <= CHAIN_GAP:
+                raise _Unusable(
+                    "ask", "reversed_stroke_ambiguous" if gap_reversed <= CHAIN_GAP else "path_strokes_not_contiguous",
+                    TWO_PATHS_QUESTION,
+                )
+            pts = pts[::-1]
+        elif index in sem.reversed_strokes:
+            pts = pts[::-1]
+        elif position > 0 and _frame_gap(chain[-1][-1], pts[0], world) > CHAIN_GAP:
             raise _Unusable("ask", "path_strokes_not_contiguous", TWO_PATHS_QUESTION)
+        chain.append(pts)
     # ---- target circle -> final point (enemy centroid inside the circle, else the circle centre)
     final_frame: tuple[float, float] | None = None
     if sem.target_stroke is not None:
@@ -903,6 +916,19 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     start_world = frame_to_world(start_frame[0], start_frame[1], world) if start_frame is not None else None
     units, label = _resolve_squad(req, world, sem, strokes, near, start_world)
     squad_centroid = (sum(u[2] for u in units) / len(units), sum(u[3] for u in units) / len(units))
+    squad_radius = max(ARRIVAL_RADIUS, max(math.dist((u[2], u[3]), squad_centroid) for u in units))
+    if math.dist(world_points[-1], squad_centroid) <= squad_radius:
+        raise _Unusable(
+            "ask", "route_returns_to_start",
+            "경로가 지금 서 있는 자리로 돌아오네요. 어디로 보낼까요?",
+        )
+    first = sem.path_strokes[0]
+    if first in sem.reversed_strokes:
+        pts = _xy(strokes[first])
+        ends_at_squad = _near_squad(pts[-1], world, units)
+        starts_at_squad = _near_squad(pts[0], world, units)
+        if not ends_at_squad or starts_at_squad:
+            raise _Unusable("ask", "reversed_stroke_ambiguous", TWO_PATHS_QUESTION)
     # A stroke usually starts at the squad itself: leading points within the arrival radius of the squad are not
     # waypoints (nothing to pass through there).  The final point is never dropped.
     while len(world_points) > 1 and math.dist(world_points[0], squad_centroid) <= ARRIVAL_RADIUS:
@@ -989,6 +1015,18 @@ def _ignored_stroke_is_substantial(
             ):
                 return True
     return False
+
+
+def _near_squad(frame_pt: tuple[float, float], world: SketchWorld, units: Sequence[tuple[str, int, float, float]]) -> bool:
+    wp = frame_to_world(frame_pt[0], frame_pt[1], world)
+    return wp is not None and any(math.hypot(u[2] - wp[0], u[3] - wp[1]) <= CLUSTER_START_RADIUS for u in units)
+
+
+def _frame_gap(a: tuple[float, float], b: tuple[float, float], world: SketchWorld) -> float:
+    """World distance between two frame points (``inf`` when either is outside the map)."""
+
+    wa, wb = frame_to_world(a[0], a[1], world), frame_to_world(b[0], b[1], world)
+    return math.inf if wa is None or wb is None else math.dist(wa, wb)
 
 
 def _eul_reul(word: str) -> str:

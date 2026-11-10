@@ -796,7 +796,13 @@ def test_a_route_that_ends_where_the_squad_stands_asks():
     a = rs.world_to_frame(31.0, 40.5, world)
     out = rs.world_to_frame(100.0, 70.0, world)
     strokes = [line(a, out, 12) + line(out, rs.world_to_frame(32.0, 41.0, world), 12)[1:]]
-    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=None)
+    vlm = FakeVlm(
+        {
+            "strokes": [{"index": 0, "role": "path"}], "path_order": [0], "final_action": "move",
+            "squad": {"kind": "none"}, "confidence": 0.95,
+        }
+    )
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=vlm)
     assert decision.kind == "ask" and decision.reason == "route_returns_to_start" and decision.route is None
 
 
