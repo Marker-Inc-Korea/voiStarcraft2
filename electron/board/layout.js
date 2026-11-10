@@ -13,7 +13,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   const ANCHORS = Object.freeze(["upper-left", "left"]);
   const M = Object.freeze({
-    cardH: 56, gap: 8, pad: 8, headerH: 20,
+    cardH: 54, gap: 6, pad: 8, headerH: 18,
     minWidth: 300, maxWidth: 340, narrowMin: 220,
     tabW: 92, tabH: 26,
     maxHeightRatio: 0.4, maxRightRatio: 0.4, maxBottomRatio: 0.6, leftCentreRatio: 0.4,

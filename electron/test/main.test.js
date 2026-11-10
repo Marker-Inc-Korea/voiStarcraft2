@@ -36,11 +36,11 @@ const {validateEmergency}=require("../protocol.js");for(const action of ["retrea
 test("HUD is a clipped shape with polygon hit-testing and both skins ship in the stylesheet",()=>{const dir=path.join(__dirname,"..");const css=fs.readFileSync(path.join(dir,"renderer","style.css"),"utf8"),html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),js=fs.readFileSync(path.join(dir,"renderer","renderer.js"),"utf8"),main=fs.readFileSync(path.join(dir,"main.js"),"utf8");
 assert.match(js,/style\.clipPath = shape\.clipPath/);assert.match(main,/HudShape\.containsPoint/);assert.doesNotMatch(main,/overPanel = revealed && panel && inside/);
 assert.match(html,/id="outline"/);assert.match(html,/class="term-fx"/);assert.match(html,/data-skin="cosmic"/);
-assert.match(css,/body\[data-skin="terminal"\]/);assert.match(css,/#2cff7a/);assert.match(css,/SF Mono/);assert.match(css,/@keyframes blink/);assert.doesNotMatch(css,/clip-path: polygon/);
-assert.match(css,/#space \{[^}]*mix-blend-mode: plus-lighter/);assert.match(css,/prefers-reduced-motion: reduce/);
+assert.match(css,/body\[data-skin="terminal"\]/);assert.match(css,/#2cff7a/);assert.match(css,/SF Mono/);assert.match(css,/repeating-linear-gradient\(180deg/);assert.match(css,/@keyframes blink/);assert.doesNotMatch(css,/clip-path: polygon/);
+assert.match(css,/#space \{[^}]*mix-blend-mode: plus-lighter/);assert.match(css,/@keyframes orbit/);assert.match(css,/prefers-reduced-motion: reduce/);
 assert.match(css,/color-mix\(in srgb, var\(--tint\) calc\(var\(--glass-alpha\) \* 100%\), transparent\)/);assert.match(css,/color-mix\(in srgb, rgb\(var\(--term-bg\)\) calc\(var\(--glass-alpha\) \* 100%\), transparent\)/);});
-test("cosmic skin keeps the additive canvas; the orb is a flat round control (no planet markup, no sweep)",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(dir,"renderer","space.js"),"utf8");
-assert.match(space,/globalCompositeOperation = "lighter"/);assert.doesNotMatch(html,/class="sweep"|class="sheen"|orb-ring|class="moon"/);assert.match(html,/id="orb"/);assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
+test("cosmic skin keeps the additive canvas, gradient rim, sweep and planet orb",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(dir,"renderer","space.js"),"utf8");
+assert.match(space,/globalCompositeOperation = "lighter"/);assert.match(html,/class="sweep"/);assert.match(html,/class="orb-ring"[^>]*><i class="moon"><\/i><\/span>/);assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
 assert.match(space,/cfg\.enabled !== false/);});
 test("releaseFocus blurs whenever the dock was focusable: a panel window reports isFocused() false after a real click yet still holds the keyboard",()=>{
   const main=fs.readFileSync(path.join(__dirname,"..","main.js"),"utf8");
