@@ -181,7 +181,7 @@ test("operation card in a simulated runtime shows 시뮬 stages, never a real or
   m.ingest(PLAN);
   m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "move", label_ko: "" });
   m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 1, done: true, released: false });
-  assert.deepEqual(m.card({ sim: true }).stages, ["done", "done", "sim", "sim", "sim"].map((s, i) => (i === 2 ? "done" : s)));
+  assert.deepEqual(m.card({ sim: true }).stages, ["done", "done", "done", "sim", "sim"]);
   assert.equal(m.card({ sim: true }).sim, true);
 });
 test("operation card: released blocks the first open stage with the reason", () => {
@@ -190,7 +190,7 @@ test("operation card: released blocks the first open stage with the reason", () 
   m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "select", label_ko: "" });
   m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 0, done: false, released: true, reason: "emergency" });
   const c = m.card();
-  assert.deepEqual(c.stages, ["done", "done", "done", "done", "blocked"]); assert.equal(c.blockedReason, "emergency"); assert.equal(c.open, false);
+  assert.deepEqual(c.stages, ["done", "done", "done", "blocked", "todo"]); assert.equal(c.blockedReason, "emergency"); assert.equal(c.open, false);
 });
 test("operation card name is capped at 80 characters", () => {
   const { m } = make();

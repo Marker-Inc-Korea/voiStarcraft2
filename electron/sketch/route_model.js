@@ -7,14 +7,14 @@
   else root.VoiRouteModel = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   const SUBMITTED_ALPHA = 0.45;
-  const ASK_LINGER_MS = 15000, NONE_LINGER_MS = 4000;
+  const ASK_LINGER_MS = 15000, NONE_LINGER_MS = 4000, EXECUTE_LINGER_MS = 30000;
   const CURSOR_FADE_MS = 400;
   const ACTIONS = ["move", "attack"], CURSOR_ACTIONS = ["move", "attack", "select"];
   const inFrame = v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
   const text = v => (typeof v === "string" ? v.trim() : "");
 
   function createRouteModel({ now = Date.now, fadeMs = 1500, holdMs = 4000, cursorIdleMs = 2500 } = {}) {
-    let route = null, cursor = null, cursorSeq = 0, sketch = null, lastSeq = 0;
+    let route = null, cursor = null, cursorSeq = 0, sketch = null, lastSeq = 0, selected = false, ordered = false;
 
     function parsePlan(event) {
       const r = event.route;
@@ -33,7 +33,7 @@
       if (event.kind === "route_plan") {
         const plan = parsePlan(event);
         if (!plan) return;
-        route = plan; sketch = null; cursor = null;
+        route = plan; sketch = null; cursor = null; selected = false; ordered = false;
       } else if (event.kind === "route_progress") {
         if (!route || String(event.plan_id || "") !== route.planId) return;
         if (Number.isFinite(event.reached_index)) route.reachedIndex = Math.max(route.reachedIndex, Math.min(route.waypoints.length - 1, Math.max(-1, Math.floor(event.reached_index))));
@@ -41,6 +41,7 @@
         else if (event.released === true && !route.done && !route.released) { route.released = true; route.reason = text(event.reason); route.endedAt = now(); }
       } else if (event.kind === "agent_cursor") {
         if (!route || String(event.plan_id || "") !== route.planId || !inFrame(event.nx) || !inFrame(event.ny) || !CURSOR_ACTIONS.includes(event.action)) return;
+        selected = true; if (event.action !== "select") ordered = true;
         cursor = { nx: event.nx, ny: event.ny, action: event.action, label: text(event.label_ko), at: now(), seq: ++cursorSeq };
       }
     }
@@ -83,13 +84,29 @@
       }
       let s = null;
       if (sketch && !route) {
-        const linger = sketch.settled === "ask" ? ASK_LINGER_MS : sketch.settled ? NONE_LINGER_MS : Infinity;
+        const linger = sketch.settled === "ask" ? ASK_LINGER_MS : sketch.settled === "execute" ? EXECUTE_LINGER_MS : sketch.settled ? NONE_LINGER_MS : Infinity;
         if (sketch.settledAt === null || at - sketch.settledAt <= linger) s = { planId: sketch.planId, strokes: sketch.strokes, alpha: SUBMITTED_ALPHA, settled: sketch.settled };
       }
       return { route: r, progressText: r ? progressText(route) : "", cursor: c, strokes: s };
     }
+    // Board card (same shape as board_cards.js): heard/understood come with the plan itself; assigned/ordered only after the agent
+    // cursor reported a select / move|attack; effect only on done:true. A fake-bot runtime shows 시뮬 for ordered/effect.
+    function card({ sim = false } = {}) {
+      if (!route) return null;
+      const reached = [true, true, selected, ordered, route.done];
+      const first = reached.indexOf(false);
+      const stages = reached.map((done, i) => {
+        if (done) return sim && i >= 3 ? "sim" : "done";
+        if (i !== first) return "todo";
+        return route.released ? "blocked" : "active";
+      });
+      return {
+        id: `route-${route.planId}`.slice(0, 64), name: progressText(route).slice(0, 80), tier: "operation", stages,
+        blockedReason: route.released ? (route.reason || "released").slice(0, 200) : "", sim, open: !route.done && !route.released,
+      };
+    }
     return {
-      ingest, resetSeq, view,
+      ingest, resetSeq, view, card,
       setSketch(planId, strokes) { sketch = { planId, strokes, settled: "", settledAt: null }; },
       settleSketch(kind) { if (sketch) { sketch.settled = kind || "none"; sketch.settledAt = now(); } },
       clearSketch() { sketch = null; },
@@ -97,5 +114,5 @@
       isActive: () => Boolean(route && !route.done && !route.released),
     };
   }
-  return { SUBMITTED_ALPHA, ASK_LINGER_MS, NONE_LINGER_MS, createRouteModel };
+  return { SUBMITTED_ALPHA, ASK_LINGER_MS, NONE_LINGER_MS, EXECUTE_LINGER_MS, createRouteModel };
 });
