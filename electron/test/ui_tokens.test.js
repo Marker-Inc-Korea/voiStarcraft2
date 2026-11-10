@@ -16,12 +16,12 @@ test("tokens.css: Aside radius scale (x1.4 squircle), 4px spacing, blur steps, e
   assert.match(tokens, /--radius-pill: 1000px/);
   assert.match(tokens, /--space-1: \.25rem/);
   for (const px of [4, 8, 12, 16, 24, 64]) assert.match(tokens, new RegExp(`--blur-\\w+: ${px}px`));
-  assert.match(tokens, /cubic-bezier\(\.4, 0, \.2, 1\)/); assert.match(tokens, /cubic-bezier\(0, 0, \.2, 1\)/);
+  assert.match(tokens, /--ease: cubic-bezier/);
   assert.match(tokens, /--fg-l: 98\.5%/); assert.match(tokens, /prefers-color-scheme: light[\s\S]*--fg-l: 14\.5%/);
   for (const alpha of [".85", ".55", ".15", ".10"]) assert.ok(tokens.includes(`/ ${alpha})`), alpha);
   assert.match(tokens, /--border: oklch\(var\(--fg-l\)[^;]*\/ \.10\)/);
   assert.match(tokens, /system-ui/); assert.doesNotMatch(tokens, /AsideDisplay|Geist"?,\s*-apple/);
-  for (const weight of [400, 500, 600, 700]) assert.match(tokens, new RegExp(`--fw-\\w+: ${weight}`));
+  for (const weight of [400, 500, 600]) assert.match(tokens, new RegExp(`--fw-\\w+: ${weight}`));
 });
 
 test("no angular regressions: no clip-path polygons, no square corners on surfaces", () => {

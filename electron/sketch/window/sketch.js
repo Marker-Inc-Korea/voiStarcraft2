@@ -126,7 +126,7 @@
     if (!calib) return;
     const el = $("calib-rect");
     for (const [k, v] of [["left", calib.rect.x], ["top", calib.rect.y], ["width", calib.rect.w], ["height", calib.rect.h]]) el.style[k] = `${v}px`;
-    $("calib-text").textContent = `미니맵 위치 ${Math.round(calib.rect.w)}px — 끌어서 맞추고 저장`;
+    $("calib-text").textContent = `미니맵 위치 ${Math.round(calib.rect.w)}px · 끌어서 맞추기`;
   }
   $("calib-rect").addEventListener("pointerdown", event => {
     if (!calib || mode !== "calibrate") return;
