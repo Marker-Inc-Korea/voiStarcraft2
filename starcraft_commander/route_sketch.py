@@ -52,6 +52,11 @@ CLUSTER_START_RADIUS: Final[float] = 6.0
 """World units: the path's first point must be this close to exactly one own-unit cluster to name it the squad."""
 PLACE_MATCH_RADIUS: Final[float] = 25.0
 """World units: a place the user NAMED must lie this close to where the route ends, else we ask."""
+IGNORED_STROKE_FRACTION: Final[float] = 0.35
+"""A stroke the VLM calls noise (or leaves unassigned) may be at most this fraction of the longest path stroke."""
+SECOND_PATH_END_DISTANCE: Final[float] = 15.0
+"""World units: two strokes leaving the squad whose ends are further apart are two different destinations."""
+TWO_PATHS_QUESTION: Final[str] = "경로가 두 개로 보여요. 어느 쪽으로 갈까요?"
 ARRIVAL_RADIUS: Final[float] = 5.0
 """World units: a leading route point this close to the squad is where it already stands, not a waypoint."""
 RDP_EPSILON: Final[float] = 0.012
@@ -878,6 +883,9 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     while len(world_points) > 1 and math.dist(world_points[0], squad_centroid) <= ARRIVAL_RADIUS:
         world_points.pop(0)
         snapped_frame.pop(0)
+    # ---- the VLM may not silence a substantial stroke (noise / unassigned): deterministic guard
+    if _ignored_stroke_is_substantial(strokes, sem, world, units, world_points[-1]):
+        raise _Unusable("ask", "substantial_stroke_ignored", TWO_PATHS_QUESTION)
     # ---- avoid marks vs the planned path (including the leg from the squad to the first waypoint)
     walk = [world_to_frame(*squad_centroid, world), *snapped_frame]
     for index in sem.avoid_strokes:
@@ -902,6 +910,60 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
         kind="execute", plan_id=_plan_id(req, "execute"), narration_ko=narration, route=route, squad=squad,
         unit_tags=tuple(sorted(u[1] for u in units)),
     )
+
+
+def _ignored_stroke_is_substantial(
+    strokes: Sequence[Stroke],
+    sem: _Semantics,
+    world: SketchWorld,
+    units: Sequence[tuple[str, int, float, float]],
+    route_end: tuple[float, float],
+) -> bool:
+    """True when a stroke that is NOT part of the route (noise / unassigned) is too big to be a stray mark.
+
+    * its world length is >= :data:`IGNORED_STROKE_FRACTION` of the longest path stroke, unless it lies inside / on an
+      assigned target, avoid or squad_select stroke; or
+    * it is an open stroke that starts at the squad like the path does and ends > :data:`SECOND_PATH_END_DISTANCE`
+      world units from both its own start and the route end (a second destination).
+    """
+
+    side = _frame_scale(world)[0]
+    used = set(sem.path_strokes)
+    anchors = [i for i in (sem.target_stroke, sem.squad_stroke, *sem.avoid_strokes) if i is not None]
+    used.update(anchors)
+    path_len = max((_length(_xy(strokes[i])) * side for i in sem.path_strokes), default=0.0)
+
+    def at_squad(frame_pt: tuple[float, float]) -> bool:
+        wp = frame_to_world(frame_pt[0], frame_pt[1], world)
+        return wp is not None and any(math.hypot(u[2] - wp[0], u[3] - wp[1]) <= CLUSTER_START_RADIUS for u in units)
+
+    path_starts_at_squad = bool(sem.path_strokes) and at_squad(_xy(strokes[sem.path_strokes[0]])[0])
+    for index, stroke in enumerate(strokes):
+        if index in used or len(stroke) < 2:
+            continue
+        pts = _xy(stroke)
+        length = _length(pts) * side
+        if _length(pts) < NOISE_LENGTH:
+            continue
+        near_anchor = any(
+            (_is_closed(_xy(strokes[a])) and _inside(_centroid(pts), _xy(strokes[a])))
+            or sum(_min_distance_to_polyline(p, _xy(strokes[a])) <= 0.02 for p in pts) >= 0.8 * len(pts)
+            for a in anchors
+        )
+        if near_anchor:
+            continue
+        if path_len > 0.0 and length >= IGNORED_STROKE_FRACTION * path_len:
+            return True
+        if not _is_closed(pts) and path_starts_at_squad and at_squad(pts[0]):
+            end = frame_to_world(pts[-1][0], pts[-1][1], world)
+            start = frame_to_world(pts[0][0], pts[0][1], world)
+            if (
+                end is not None and start is not None
+                and math.dist(end, start) > SECOND_PATH_END_DISTANCE
+                and math.dist(end, route_end) > SECOND_PATH_END_DISTANCE
+            ):
+                return True
+    return False
 
 
 def _eul_reul(word: str) -> str:
