@@ -557,3 +557,101 @@ def test_instruction_override_phrasing_is_refused_before_the_vlm(transcript):
 @pytest.mark.parametrize("transcript", ["마린 4기 이 길로", "그림대로 이동해", "무시하지 말고 천천히 가", "적 앞마당으로 이동해"])
 def test_ordinary_phrasing_is_not_mistaken_for_an_override(transcript):
     assert not rs.transcript_overrides_instructions(transcript)
+
+
+# ---------------------------------------------------------------- the VLM may not silence a substantial stroke
+
+
+TWO_PATHS_QUESTION = "경로가 두 개로 보여요. 어느 쪽으로 갈까요?"
+
+
+def _two_paths(world, *, b_end=(60.0, 100.0), scribble=None):
+    start = (31.0, 40.5)
+    a = rs.world_to_frame(*start, world)
+    strokes = [
+        line(a, rs.world_to_frame(110.0, 75.0, world), 21),
+        line(rs.world_to_frame(32.0, 41.0, world), rs.world_to_frame(*b_end, world), 21),
+    ]
+    if scribble is not None:
+        strokes.append(scribble)
+    return strokes
+
+
+def _vlm_roles(roles, order=(0,), **extra):
+    answer = {
+        "strokes": [{"index": i, "role": r} for i, r in enumerate(roles)],
+        "path_order": list(order),
+        "final_action": "move",
+        "squad": {"kind": "none"},
+        "confidence": 0.9,
+    }
+    answer.update(extra)
+    return FakeVlm(answer)
+
+
+@pytest.mark.parametrize("b_end", [(60.0, 100.0), (20.0, 100.0), (140.0, 20.0), (111.0, 60.0)])
+def test_vlm_labelling_a_second_full_path_as_noise_asks_instead_of_executing(b_end):
+    world = _cluster_world()
+    strokes = _two_paths(world, b_end=b_end)
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_roles(["path", "noise"]))
+    assert decision.kind == "ask" and decision.route is None and decision.question_ko == TWO_PATHS_QUESTION
+    assert decision.reason == "substantial_stroke_ignored"
+
+
+def test_a_second_stroke_the_vlm_leaves_out_of_roles_still_cannot_be_dropped():
+    world = _cluster_world()
+    strokes = _two_paths(world)
+    vlm = FakeVlm(
+        {
+            "strokes": [{"index": 0, "role": "path"}],
+            "path_order": [0],
+            "final_action": "move",
+            "squad": {"kind": "none"},
+            "confidence": 0.9,
+        }
+    )
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=vlm)
+    assert decision.kind == "ask" and decision.route is None
+
+
+def test_two_open_strokes_from_the_squad_with_different_ends_ask_even_when_the_second_is_short():
+    world = _cluster_world()
+    a = rs.world_to_frame(31.0, 40.5, world)
+    strokes = [
+        line(a, rs.world_to_frame(110.0, 75.0, world), 21),
+        line(rs.world_to_frame(32.0, 41.0, world), rs.world_to_frame(44.0, 55.0, world), 8),  # short but leaves the squad
+    ]
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_roles(["path", "noise"]))
+    assert decision.kind == "ask" and decision.question_ko == TWO_PATHS_QUESTION
+
+
+def test_short_scribble_away_from_the_squad_is_still_noise():
+    world = _cluster_world()
+    a = rs.world_to_frame(31.0, 40.5, world)
+    scribble = [(0.80 + 0.004 * (i % 3), 0.20 + 0.004 * (i % 2), i * 8) for i in range(10)]
+    strokes = [line(a, rs.world_to_frame(110.0, 75.0, world), 21), scribble]
+    scribble_len = rs._length([(p[0], p[1]) for p in scribble])
+    assert scribble_len >= rs.NOISE_LENGTH  # long enough to be a drawn mark, short compared to the path
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_roles(["path", "noise"]))
+    assert decision.kind == "execute", decision
+
+
+def test_noise_squiggle_inside_the_target_circle_is_still_noise():
+    world = _cluster_world()
+    a = rs.world_to_frame(31.0, 40.5, world)
+    cx, cy = rs.world_to_frame(110.0, 75.0, world)
+    ring = circle(cx, cy, 0.06)
+    squiggle = [(cx + 0.02 * math.sin(i), cy + 0.015 * math.cos(i * 1.3), i * 8) for i in range(30)]
+    strokes = [line(a, (cx - 0.05, cy), 15), ring, squiggle]
+    vlm = _vlm_roles(["path", "target", "noise"])
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=vlm)
+    assert decision.kind == "execute", decision
+
+
+def test_noise_label_is_fine_when_the_other_stroke_is_a_closed_mark_not_a_path():
+    world = _cluster_world()
+    a = rs.world_to_frame(31.0, 40.5, world)
+    far_ring = circle(0.85, 0.15, 0.03)  # long-ish perimeter but closed and nowhere near the squad
+    strokes = [line(a, rs.world_to_frame(110.0, 75.0, world), 21), far_ring]
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_roles(["path", "noise"]))
+    assert decision.kind == "execute", decision
