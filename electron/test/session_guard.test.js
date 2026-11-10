@@ -38,5 +38,5 @@ test("the sketch probe runs the guard first, never warps the cursor, and drives 
   const fs = require("node:fs"), path = require("node:path");
   const text = fs.readFileSync(path.join(__dirname, "..", "smoke", "sketch_probe.js"), "utf8");
   assert.match(text, /session_guard/); assert.match(text, /isBlocked/); assert.match(text, /CGSSessionScreenIsLocked/);
-  assert.match(text, /drag/); assert.match(text, /isFocused|focus/); assert.doesNotMatch(text, /\bwarp\b/);
+  assert.match(text, /drag/); assert.match(text, /isFocused|focus/); assert.doesNotMatch(text, /\bwarp\b/); assert.match(text, /captureMode === "native"/); assert.match(text, /witness/); assert.match(text, /lsappinfo/);
 });
