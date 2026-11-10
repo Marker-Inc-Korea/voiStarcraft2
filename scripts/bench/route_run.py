@@ -1,9 +1,11 @@
 """Run the route-sketch interpreter over route_corpus.jsonl for several VLMs and score it (route_scoring.py).
 
 The system under test is RouteBackend's ``starcraft_commander.route_sketch.interpret_sketch(req, world, *, vlm)`` with an
-injected VlmReader per model (route_vlm.ProxyVlm over the proxy, image part = the rendered minimap incl. strokes) and the
+injected VlmReader per model (the SHIPPED ``route_vlm.ProxyVlmReader`` over the proxy, image part = the rendered minimap incl.
+strokes; only its urlopen is wrapped to read the proxy-reported token usage) and the
 deterministic no-VLM fallback (``vlm=None``).  Latency = wall time of one interpret call (the rendered PNG is built before
-the clock starts).  ``tokens`` = proxy-reported total tokens of that call's VLM request(s).
+the clock starts).  ``tokens`` = proxy-reported total tokens of that call's VLM request(s).  The whole request path (prompt,
+schema, response_format, 20 s timeout) is the product's, so an unparseable / rejected / timed-out answer is an ``ask``.
 
 Usage (repo root):
   source ~/.zshenv
@@ -25,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -153,6 +156,47 @@ def _corpus_hash() -> str:
 # --------------------------------------------------------------------------- the real system under test
 
 
+class UsageRecordingVlm:
+    """Wraps the product's ProxyVlmReader: same request, plus thread-local token usage read from the response body."""
+
+    def __init__(self, model: str):
+        import urllib.request
+
+        from starcraft_commander import realtime_intent, route_vlm
+
+        cfg = realtime_intent.load_upstream_config(os.environ)
+        if not cfg.api_key:
+            raise SystemExit("no API key: source ~/.zshenv")
+        self.model = model
+        self._tl = threading.local()
+        self._urlopen = urllib.request.urlopen
+        self._reader = route_vlm.ProxyVlmReader(base_url=cfg.base_url, api_key=cfg.api_key, model=model, opener=self._open)
+
+    def _open(self, request, **kw):
+        import io
+        import json as _json
+
+        resp = self._urlopen(request, **kw)
+        raw = resp.read()
+        resp.close()
+        try:
+            u = _json.loads(raw).get("usage") or {}
+            self._tl.tokens = u.get("total_tokens") or ((u.get("prompt_tokens") or 0) + (u.get("completion_tokens") or 0)) or None
+        except ValueError:
+            self._tl.tokens = None
+        return io.BytesIO(raw)
+
+    @property
+    def last_tokens(self):
+        return getattr(self._tl, "tokens", None)
+
+    def reset(self):
+        self._tl.tokens = None
+
+    def read(self, image_png, prompt, schema):
+        return self._reader.read(image_png, prompt, schema)
+
+
 def real_interpret():
     """Bind to RouteBackend's interpret_sketch (merged from feat/r6-route).  Adapter lives here so the bench never edits it."""
 
@@ -211,15 +255,14 @@ def load_results() -> dict[str, dict]:
 
 
 def probe(models: list[str]) -> int:
-    import route_vlm as V
-
     row = RC.load_rows()[0]
     png = RW.render_minimap(RW.World.from_dict(row["world"]), row["request"]["strokes"], size=384)
     for m in models:
-        vlm = V.ProxyVlm(m, retries=0)
+        vlm = UsageRecordingVlm(m)
+        t0 = time.perf_counter()
         try:
-            out = vlm.read(png, "Reply JSON {\"stroke_color\": <color name of the drawn line>}.", {"type": "object"})
-            print(f"{m}: image OK ({vlm.last_latency_ms} ms) -> {out}")
+            out = vlm.read(png, 'Reply JSON {"stroke_color": <color name of the drawn line>}.', {"type": "object"})
+            print(f"{m}: image OK ({(time.perf_counter() - t0) * 1000:.0f} ms, {vlm.last_tokens} tokens) -> {out}")
         except Exception as e:  # noqa: BLE001
             print(f"{m}: REJECTED/failed: {_scrub(str(e))}")
     return 0
@@ -247,11 +290,8 @@ def main(argv=None) -> int:
     if a.limit:
         rows = rows[:: max(1, len(rows) // a.limit)][: a.limit]
     interpret = real_interpret()
-    import route_vlm as V
-
-    shared = V.make_client()
     for m in a.models:
-        mk = (lambda: None) if m == "none" else (lambda m=m: V.ProxyVlm(m, client=shared))
+        mk = (lambda: None) if m == "none" else (lambda m=m: UsageRecordingVlm(m))
         run = run_variant(m, rows, interpret, mk, reps=a.reps, concurrency=a.concurrency, render_images=not a.no_images)
         print(f"== {m}: {fmt(run['aggregate']['all']['kind_acc'])} kind_acc, unsafe {run['aggregate']['all']['unsafe']}, "
               f"unanswered {run['aggregate']['all']['unanswered']}, p50 {run['aggregate']['all']['latency_p50_ms']} ms; {run['meta']['uptime']}")
