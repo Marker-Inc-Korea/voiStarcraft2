@@ -12,48 +12,60 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>voiStarcraft2 전술 명령창</title>
   <style>
+    /* Tokens mirror electron/renderer/tokens.css (docs/design-direction.md): graphite ramp, three text roles,
+       one console-cyan accent, one easing curve, weights 400-600. */
     :root {
       color-scheme: dark;
-      --ink: #eef8f6;
-      --muted: #91a9a8;
-      --panel: rgba(5, 18, 24, 0.92);
-      --line: rgba(102, 231, 219, 0.24);
-      --cyan: #65f3df;
-      --amber: #ffbd57;
-      --danger: #ff6b5f;
-      --ok: #7ae582;
+      --bg: #141415;
+      --surface: #19191b;
+      --raised: #232325;
+      --fg: #ededed;
+      --fg-secondary: #a1a1a6;
+      --muted: #85858b;
+      --border: rgb(237 237 237 / 0.1);
+      --border-strong: rgb(237 237 237 / 0.2);
+      --fill: rgb(237 237 237 / 0.05);
+      --fill-strong: rgb(237 237 237 / 0.1);
+      --accent: oklch(80% 0.12 215);
+      --accent-ink: oklch(22% 0.04 230);
+      --warn: oklch(83% 0.15 85);
+      --ok: oklch(79% 0.19 150);
+      --danger: oklch(70.4% 0.191 22.2);
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      --dur: 150ms;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
     }
     * { box-sizing: border-box; }
     html, body { min-height: 100%; }
     body {
       margin: 0;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at 88% 8%, rgba(255, 189, 87, 0.16), transparent 31%),
-        linear-gradient(145deg, #07171d 0%, #0a2228 47%, #071319 100%);
-      font-family: "Avenir Next Condensed", "Arial Narrow", sans-serif;
-      letter-spacing: 0.01em;
+      color: var(--fg);
+      background: var(--bg);
+      font-family: var(--font);
+      font-size: 13px;
+      line-height: 20px;
     }
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      opacity: 0.18;
-      background-image:
-        linear-gradient(rgba(101, 243, 223, 0.08) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(101, 243, 223, 0.08) 1px, transparent 1px);
-      background-size: 28px 28px;
-      mask-image: linear-gradient(to bottom, black, transparent 70%);
-    }
-    button, input { font: inherit; }
+    button, input, select { font: inherit; }
     button { cursor: pointer; }
+    button, input, select {
+      transition:
+        color var(--dur) var(--ease),
+        background-color var(--dur) var(--ease),
+        border-color var(--dur) var(--ease),
+        opacity var(--dur) var(--ease),
+        transform var(--dur) var(--ease);
+    }
+    button:active { transform: scale(0.98); }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
     .shell {
       position: relative;
       min-height: 100vh;
       padding: 16px;
       display: grid;
-      grid-template-rows: auto auto minmax(170px, 1fr) minmax(140px, 0.8fr) auto;
+      grid-template-rows: auto auto auto minmax(168px, 1fr) minmax(140px, 0.8fr) auto;
       gap: 12px;
     }
     .topbar {
@@ -63,54 +75,59 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       gap: 12px;
     }
     .eyebrow {
-      margin: 0 0 3px;
-      color: var(--cyan);
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 400;
+      letter-spacing: 0.01em;
     }
     h1 {
       margin: 0;
-      font-family: "Futura", "Avenir Next Condensed", sans-serif;
-      font-size: clamp(22px, 6vw, 31px);
-      letter-spacing: -0.045em;
+      font-size: clamp(20px, 5vw, 24px);
+      line-height: 28px;
+      font-weight: 500;
     }
     .status-pill {
       flex: none;
       max-width: 180px;
-      padding: 8px 10px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      color: var(--amber);
-      background: rgba(2, 10, 14, 0.74);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--fg-secondary);
+      background: var(--surface);
       font-size: 12px;
-      font-weight: 800;
-      text-align: center;
+      line-height: 16px;
+      font-variant-numeric: tabular-nums;
     }
-    .status-pill[data-state="connected"] {
-      color: var(--ok);
-      border-color: rgba(122, 229, 130, 0.42);
+    .status-pill::before {
+      content: "";
+      flex: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
     }
-    .status-pill[data-state="failed"] {
-      color: var(--danger);
-      border-color: rgba(255, 107, 95, 0.48);
-    }
+    .status-pill[data-state="connected"] { color: var(--fg); }
+    .status-pill[data-state="connected"]::before { background: var(--ok); }
+    .status-pill[data-state="failed"] { color: var(--danger); }
+    .status-pill[data-state="failed"]::before { background: var(--danger); }
     .panel {
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--panel);
-      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
-      backdrop-filter: blur(14px);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--surface);
     }
     .operation {
-      padding: 14px;
+      padding: 16px;
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
     .chat {
       min-height: 0;
-      padding: 12px;
+      padding: 16px;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       gap: 8px;
@@ -118,7 +135,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     .chat-list {
       min-height: 0;
       margin: 0;
-      padding: 0 2px 2px 0;
+      padding: 0;
       overflow: auto;
       list-style: none;
       display: grid;
@@ -129,88 +146,102 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       display: grid;
       gap: 4px;
       max-width: 92%;
-      padding: 9px 10px;
-      border: 1px solid rgba(101, 243, 223, 0.16);
-      border-radius: 12px;
-      color: #d8e9e6;
-      background: rgba(15, 48, 55, 0.68);
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: var(--fg-secondary);
+      background: var(--fill);
       font-size: 13px;
-      line-height: 1.35;
+      line-height: 20px;
     }
     .chat-card.user {
       justify-self: end;
-      border-color: rgba(123, 184, 255, 0.3);
-      background: rgba(25, 53, 77, 0.76);
+      color: var(--fg);
+      background: var(--fill-strong);
     }
     .chat-card.assistant {
       justify-self: start;
     }
     .chat-meta {
       color: var(--muted);
-      font-size: 10px;
-      font-weight: 800;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
+      font-size: 12px;
+      line-height: 16px;
     }
     .chat-text {
       word-break: keep-all;
     }
     .chat-state {
-      color: var(--cyan);
-      font-size: 11px;
-      font-weight: 800;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 16px;
     }
     .operation-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 12px;
     }
     .label {
       color: var(--muted);
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 500;
     }
     .stage {
-      color: var(--cyan);
+      color: var(--accent);
       font-size: 12px;
-      font-weight: 800;
+      line-height: 16px;
+      font-weight: 500;
     }
     .goal {
-      min-height: 44px;
-      font-size: 17px;
-      font-weight: 750;
-      line-height: 1.35;
+      min-height: 48px;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 24px;
       word-break: keep-all;
     }
     .composition {
-      color: var(--muted);
+      color: var(--fg-secondary);
       font-size: 13px;
-      line-height: 1.4;
+      line-height: 20px;
     }
     .queue-status {
-      min-height: 18px;
-      color: var(--amber);
+      min-height: 20px;
+      color: var(--muted);
       font-size: 12px;
-      font-weight: 800;
-      line-height: 1.4;
+      line-height: 20px;
+      font-variant-numeric: tabular-nums;
     }
     .runtime-actions {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr 40px;
       gap: 8px;
+      margin-top: 4px;
     }
-    .runtime-actions button {
-      min-height: 38px;
-      border: 1px solid var(--line);
-      border-radius: 11px;
-      color: var(--ink);
-      background: rgba(12, 39, 45, 0.88);
-      font-weight: 800;
+    .runtime-actions button,
+    .direct-registry button {
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--fg);
+      background: var(--raised);
+      font-weight: 500;
+    }
+    .runtime-actions button:hover,
+    .direct-registry button:hover {
+      border-color: var(--border-strong);
+    }
+    .runtime-actions button svg { display: block; margin: 0 auto; }
+    svg.icon {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
     .direct-registry {
+      padding: 16px;
       display: grid;
       gap: 8px;
     }
@@ -220,51 +251,50 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       gap: 8px;
     }
     .direct-registry input,
-    .direct-registry select {
+    .direct-registry select,
+    #command-input {
       min-width: 0;
-      min-height: 38px;
-      border: 1px solid rgba(101, 243, 223, 0.28);
-      border-radius: 10px;
-      padding: 0 9px;
-      color: #d8e9e6;
-      background: rgba(7, 25, 31, 0.86);
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 12px;
+      color: var(--fg);
+      background: var(--bg);
     }
-    .direct-registry button {
-      min-height: 38px;
-      border: 1px solid rgba(101, 243, 223, 0.34);
-      border-radius: 10px;
-      padding: 0 11px;
-      color: #071319;
-      background: var(--cyan);
-      font-weight: 900;
-    }
+    .direct-registry input::placeholder,
+    #command-input::placeholder { color: var(--muted); }
+    .direct-registry input:hover,
+    .direct-registry select:hover,
+    #command-input:hover { border-color: var(--border-strong); }
+    .direct-registry button { padding: 0 12px; }
     .direct-registry-note,
     .direct-registry-status {
       margin: 0;
       color: var(--muted);
-      font-size: 11px;
-      line-height: 1.35;
+      font-size: 12px;
+      line-height: 16px;
     }
     .direct-registry-status[data-tone="danger"] { color: var(--danger); }
     .direct-registry-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 8px;
       margin: 0;
       padding: 0;
       list-style: none;
     }
     .direct-registry-list li {
-      padding: 5px 8px;
-      border: 1px solid rgba(101, 243, 223, 0.18);
-      border-radius: 999px;
-      color: #d8e9e6;
-      background: rgba(15, 48, 55, 0.68);
-      font-size: 11px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--fg-secondary);
+      background: var(--fill);
+      font-size: 12px;
+      line-height: 16px;
     }
     .captions {
       min-height: 0;
-      padding: 12px;
+      padding: 16px;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       gap: 8px;
@@ -277,69 +307,70 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       list-style: none;
       display: grid;
       align-content: end;
-      gap: 7px;
+      gap: 8px;
     }
     .captions li {
-      padding: 9px 10px;
-      border-left: 3px solid var(--cyan);
-      border-radius: 0 9px 9px 0;
-      color: #d8e9e6;
-      background: rgba(15, 48, 55, 0.68);
+      padding: 8px 12px;
+      border-left: 2px solid var(--border-strong);
+      border-radius: 0 8px 8px 0;
+      color: var(--fg-secondary);
+      background: var(--fill);
       font-size: 13px;
-      line-height: 1.35;
+      line-height: 20px;
     }
-    .captions li.warning { border-left-color: var(--amber); }
+    .captions li.warning { border-left-color: var(--warn); }
     .captions li.danger { border-left-color: var(--danger); }
     .command-dock {
       position: sticky;
       bottom: 0;
-      padding: 11px;
+      padding: 12px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 44px 64px;
+      grid-template-columns: minmax(0, 1fr) 48px 64px;
       gap: 8px;
     }
     #command-input {
-      min-width: 0;
-      min-height: 46px;
-      border: 1px solid rgba(101, 243, 223, 0.32);
-      border-radius: 12px;
-      padding: 0 12px;
-      color: #071319;
-      background: #eaf6f3;
+      min-height: 48px;
       outline: none;
     }
+    #command-input:focus-visible,
     #command-input:focus {
-      outline: 3px solid rgba(101, 243, 223, 0.88);
+      border-color: var(--accent);
+      outline: 2px solid var(--accent);
       outline-offset: 2px;
-      box-shadow: 0 0 0 3px rgba(101, 243, 223, 0.18);
     }
     .icon-button, .send-button {
-      min-height: 46px;
+      min-height: 48px;
       border: 0;
-      border-radius: 12px;
-      font-weight: 900;
+      border-radius: 8px;
+      font-weight: 500;
     }
     .icon-button {
-      color: var(--cyan);
-      background: rgba(15, 49, 57, 0.95);
+      color: var(--fg-secondary);
+      background: var(--raised);
     }
+    .icon-button:hover { color: var(--fg); }
+    .icon-button svg { display: block; margin: 0 auto; }
     .icon-button.recording {
-      color: #081316;
+      color: var(--accent-ink);
       background: var(--danger);
-      animation: pulse 1s infinite alternate;
+      animation: pulse 1s var(--ease) infinite alternate;
     }
     .send-button {
-      color: #071319;
-      background: linear-gradient(135deg, var(--cyan), #7bb8ff);
+      color: var(--accent-ink);
+      background: var(--accent);
     }
+    .send-button:hover { opacity: 0.9; }
     .retreat-button {
       grid-column: 1 / -1;
-      min-height: 39px;
-      border: 1px solid rgba(255, 107, 95, 0.55);
-      border-radius: 11px;
-      color: #ffd8d3;
-      background: rgba(97, 24, 24, 0.72);
-      font-weight: 900;
+      min-height: 40px;
+      border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+      border-radius: 8px;
+      color: var(--danger);
+      background: transparent;
+      font-weight: 500;
+    }
+    .retreat-button:hover {
+      background: color-mix(in oklch, var(--danger) 10%, transparent);
     }
     .command-feedback {
       grid-column: 1 / -1;
@@ -348,6 +379,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       margin: 0;
       color: var(--muted);
       font-size: 12px;
+      line-height: 16px;
     }
     @keyframes pulse {
       from { transform: scale(0.96); }
@@ -364,13 +396,12 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     @media (forced-colors: active) {
       #command-input:focus {
         outline: 2px solid Highlight;
-        box-shadow: none;
       }
     }
     @media (max-width: 430px) {
-      .shell { padding: 10px; }
+      .shell { padding: 12px; }
       .topbar { align-items: center; }
-      .status-pill { max-width: 135px; }
+      .status-pill { max-width: 136px; }
       .direct-registry-controls { grid-template-columns: 1fr; }
     }
   </style>
@@ -379,7 +410,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   <main class="shell">
     <header class="topbar">
       <div>
-        <p class="eyebrow">SC2 tactical companion</p>
+        <p class="eyebrow">SC2 전술 보조</p>
         <h1>전술 명령창</h1>
       </div>
       <div id="runtime-status" class="status-pill" data-state="idle">SC2 대기</div>
@@ -390,17 +421,17 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         <span id="operation-label" class="label">현재 명령</span>
         <span id="operation-stage" class="stage">명령 대기</span>
       </div>
-      <div id="operation-goal" class="goal">게임을 시작하고 명령을 입력하세요.</div>
-      <div id="operation-composition" class="composition">SC2 실행 대상과 현재 상태가 여기에 표시됩니다.</div>
-      <div id="queue-status" class="queue-status" aria-live="polite">명령 큐를 확인 중입니다.</div>
+      <div id="operation-goal" class="goal">게임을 시작하고 명령을 입력하세요</div>
+      <div id="operation-composition" class="composition">실행 대상과 상태가 여기에 표시됩니다</div>
+      <div id="queue-status" class="queue-status" aria-live="polite">명령 큐 확인 중</div>
       <div class="runtime-actions">
         <button id="runtime-start" type="button">SC2 / MicroMachine 시작</button>
-        <button id="runtime-refresh" type="button" title="상태 새로고침">↻</button>
+        <button id="runtime-refresh" type="button" title="상태 새로고침" aria-label="상태 새로고침"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
       </div>
   </section>
 
     <section class="panel direct-registry" aria-labelledby="direct-registry-label">
-      <span id="direct-registry-label" class="label">Direct semantic pin</span>
+      <span id="direct-registry-label" class="label">직접 핀</span>
       <div class="direct-registry-controls">
         <input id="target-pin-name" type="text" maxlength="128"
                placeholder="핀 이름 · 예: 앞마당 입구" aria-label="semantic pin 이름">
@@ -414,7 +445,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         </select>
         <button id="target-pin-save" type="button">핀 저장</button>
       </div>
-      <p class="direct-registry-note">좌표와 유닛 태그는 받지 않고, 검증된 semantic target만 저장합니다.</p>
+      <p class="direct-registry-note">좌표와 유닛 태그는 받지 않고, 검증된 semantic target만 저장합니다</p>
       <p id="target-pin-status" class="direct-registry-status" aria-live="polite"></p>
       <ul id="target-pin-list" class="direct-registry-list" aria-label="저장된 semantic pin"></ul>
     </section>
@@ -434,10 +465,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
              aria-label="전술 명령"
              placeholder="예: 마린 6기, 탱크 2기, 바이킹 2기로 적 본진 공격">
       <button id="voice-button" class="icon-button" type="button"
-              title="음성 명령" aria-label="음성 명령" aria-pressed="false">◉</button>
+              title="음성 명령" aria-label="음성 명령" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg></button>
       <button class="send-button" type="submit">전송</button>
       <button id="retreat-button" class="retreat-button" type="button">긴급 전군 후퇴</button>
-      <p id="command-feedback" class="command-feedback" aria-live="assertive" aria-atomic="true">명령을 입력하면 최신 명령부터 처리합니다.</p>
+      <p id="command-feedback" class="command-feedback" aria-live="assertive" aria-atomic="true">최신 명령부터 처리합니다</p>
     </form>
   </main>
   <script>
@@ -683,7 +714,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       chatCard(
         updateId,
         "assistant",
-        String(entry.assistant_message || "명령 상태가 갱신되었습니다."),
+        String(entry.assistant_message || "명령 상태가 갱신되었습니다"),
         recentCommandState(entry)
       );
     });
@@ -729,7 +760,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (signature !== lastRuntimeSignature) {
       lastRuntimeSignature = signature;
       if (connected) {
-        appendCaption("SC2와 MicroMachine 연결을 확인했습니다.", "", "runtime-connected");
+        appendCaption("SC2와 MicroMachine 연결을 확인했습니다", "", "runtime-connected");
       } else if (failed) {
         appendCaption(
           "런타임 시작 실패: " + String(status.error || status.last_line || "원인 미상"),
@@ -737,7 +768,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
           signature
         );
       } else if (status.status === "starting" || status.status === "running") {
-        appendCaption("SC2 / MicroMachine을 시작하고 있습니다.", "warning", "runtime-starting");
+        appendCaption("SC2 / MicroMachine을 시작하고 있습니다", "warning", "runtime-starting");
       }
     }
   }
@@ -1060,9 +1091,9 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var stageNode = document.getElementById("operation-stage");
     var compositionNode = document.getElementById("operation-composition");
     if (!operation) {
-      goalNode.textContent = "명령을 입력하면 해석 및 실행 상태가 표시됩니다.";
+      goalNode.textContent = "명령을 입력하면 해석 및 실행 상태가 표시됩니다";
       stageNode.textContent = "명령 대기";
-      compositionNode.textContent = "SC2 실행 대상과 현재 상태가 여기에 표시됩니다.";
+      compositionNode.textContent = "실행 대상과 상태가 여기에 표시됩니다";
       renderQueueStatus(data, null, "");
       return;
     }
@@ -1105,7 +1136,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       var tone = stage === "차단" ? "danger" : (runtimeConnected ? "" : "warning");
       var suffix = runtimeConnected
         ? ""
-        : " 현재 게임 연결을 기다리는 중입니다.";
+        : " 게임 연결 대기 중";
       appendCaption(
         stage === "확인 필요"
           ? "확인 필요: " + clarificationPrompt
@@ -1121,7 +1152,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
           stage === "확인 필요"
             ? clarificationPrompt
             : stage === "차단"
-              ? "명령을 실행하지 못했습니다."
+              ? "명령을 실행하지 못했습니다"
               : stage + " · " + composition,
           chatState(stage) + " · " + queueSummary(data)
         );
@@ -1137,16 +1168,16 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
           clarificationInput.focus();
         }
       } else if (stage === "효과 확인" || stage === "SC2 실행") {
-        setFeedback("명령이 SC2 런타임에 적용되었습니다.", false);
+        setFeedback("명령이 SC2 런타임에 적용되었습니다", false);
       } else if (stage === "SC2 실행 대기") {
         setFeedback(
-          "명령 해석은 완료됐습니다. SC2 / MicroMachine 연결 후 실행됩니다.",
+          "명령 해석 완료. SC2 / MicroMachine 연결 후 실행합니다",
           false
         );
       } else if (stage === "차단") {
-        setFeedback("명령 실행이 차단되었습니다. 전술 자막을 확인하세요.", true);
+        setFeedback("명령 실행이 차단되었습니다. 실행 상태를 확인하세요", true);
       } else if (lastSubmittedUpdateId === selectedUpdateId) {
-        setFeedback("명령을 접수했습니다. 실행 상태는 위 상태판에서 갱신됩니다.", false);
+        setFeedback("명령을 접수했습니다. 실행 상태는 위 상태판에서 갱신됩니다", false);
       }
     }
   }
@@ -1264,10 +1295,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var name = String(nameNode.value || "").trim();
     var target = String(targetNode.value || "").trim();
     if (!name || semanticPinTargets.indexOf(target) === -1) {
-      directRegistryStatus("핀 이름과 semantic target을 선택하세요.", true);
+      directRegistryStatus("핀 이름과 semantic target을 선택하세요", true);
       return Promise.resolve();
     }
-    directRegistryStatus("semantic pin을 저장하는 중입니다.", false);
+    directRegistryStatus("semantic pin을 저장하는 중", false);
     return fetch(endpoint("/api/direct/registry/target-pin"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1305,7 +1336,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       window.webkit.messageHandlers.sc2Launch;
     if (!bridge || typeof bridge.postMessage !== "function") {
       return Promise.reject(new Error(
-        "SC2는 설치된 voiStarcraft2 앱의 네이티브 실행 버튼에서만 시작할 수 있습니다."
+        "SC2는 설치된 voiStarcraft2 앱의 네이티브 실행 버튼에서만 시작할 수 있습니다"
       ));
     }
     var nonce = (
@@ -1365,7 +1396,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
           String(status.error || "SC2 / MicroMachine runtime start was rejected.")
         );
       }
-      setFeedback("시작 요청을 보냈습니다. 연결될 때까지 상태를 추적합니다.", false);
+      setFeedback("시작 요청을 보냈습니다. 연결될 때까지 상태를 추적합니다", false);
       window.setTimeout(refreshAll, 700);
       return status;
     }).catch(function(error) {
@@ -1416,7 +1447,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         }
         if (Date.now() >= deadline) {
           reject(new Error(
-            "SC2 / MicroMachine 연결 확인 시간이 초과되었습니다."
+            "SC2 / MicroMachine 연결 확인 시간이 초과되었습니다"
           ));
           return;
         }
@@ -1446,7 +1477,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }
     if (runtimeStartPromise) { return runtimeStartPromise; }
     setFeedback(
-      "SC2 / MicroMachine을 시작한 뒤 명령을 전달합니다.",
+      "SC2 / MicroMachine을 시작한 뒤 명령을 전달합니다",
       false
     );
     runtimeStartPromise = requestNativeSC2Launch()
@@ -1471,7 +1502,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       appendCaption(message, "warning");
       return Promise.resolve(null);
     }
-    setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.", false);
+    setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중", false);
     return ensureRuntimeForCommand().catch(function() {
       return null;
     });
@@ -1541,7 +1572,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var cleaned = staged.cleaned_text;
     var submissionSequence = staged.sequence;
     var updateId = staged.update_id;
-    setFeedback("명령을 해석하고 있습니다...", false);
+    setFeedback("명령을 해석하는 중", false);
     return fetch(endpoint("/api/micromachine/modulate"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1577,14 +1608,14 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       chatCard(
         lastSubmittedUpdateId,
         "assistant",
-        "명령을 접수했습니다.",
+        "명령을 접수했습니다",
         "접수됨 · 최신 명령 우선 처리"
       );
       renderOperation(acceptedPayload);
       setFeedback(
         data.async_publish
-        ? "명령 접수 완료. 이전 미발행 명령은 교체됩니다."
-        : "명령 처리 완료.",
+        ? "명령 접수 완료. 이전 미발행 명령은 교체됩니다"
+        : "명령 처리 완료",
         false
       );
       appendCaption("명령 접수: " + cleaned, "", updateId);
@@ -1595,7 +1626,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       pendingCommand = null;
       restoreStagedCommand(staged);
       setFeedback("명령 실패: " + error.message, true);
-      chatCard(updateId, "assistant", "명령을 처리하지 못했습니다.", "실패");
+      chatCard(updateId, "assistant", "명령을 처리하지 못했습니다", "실패");
       appendCaption("명령 실패: " + error.message, "danger");
       refreshOperation();
       window.setTimeout(refreshOperation, 180);
@@ -1607,7 +1638,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var button = document.getElementById("voice-button");
     if (!VoiceRecognition) {
       button.addEventListener("click", function() {
-        setFeedback("이 브라우저는 음성 입력을 지원하지 않습니다.", true);
+        setFeedback("이 브라우저는 음성 입력을 지원하지 않습니다", true);
       });
       return;
     }
@@ -1627,7 +1658,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         recording = true;
         button.classList.add("recording");
         button.setAttribute("aria-pressed", "true");
-        setFeedback("듣고 있습니다. 명령을 말하세요.", false);
+        setFeedback("듣고 있습니다. 명령을 말하세요", false);
       };
       sessionRecognition.onresult = function(event) {
         if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
@@ -1700,7 +1731,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }
     var staged = stageCommand(originalText);
     setFeedback(
-      "SC2를 시작하고 있습니다. 명령은 이 창에 보존됩니다.",
+      "SC2를 시작하고 있습니다. 명령은 이 창에 보존됩니다",
       false
     );
     return ensureRuntimeForCommand()
@@ -1736,7 +1767,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   });
 
   setupVoice();
-  appendCaption("전술 명령창이 준비되었습니다.", "", "companion-ready");
+  appendCaption("전술 명령창이 준비되었습니다", "", "companion-ready");
   refreshAll();
   window.setInterval(refreshRuntime, 1200);
   window.setInterval(refreshOperation, OPERATION_POLL_INTERVAL_MS);
