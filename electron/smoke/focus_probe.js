@@ -9,6 +9,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const SessionGuard = require("./session_guard.js");
+// Takes over the user's real mouse and keyboard, so it runs only when asked for explicitly (the default smoke uses the second cursor).
+if (process.env.REAL_POINTER !== "1") { console.log("[focus-probe] BLOCKED: set REAL_POINTER=1 (moves your real mouse)"); process.exit(2); }
 
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-focus-probe-")));
 const OSCONTROL = process.env.OSCONTROL || "/tmp/oscontrol";

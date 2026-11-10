@@ -18,6 +18,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawn } = require("node:child_process");
 const SessionGuard = require("./session_guard.js");
+// Drags with the user's real mouse, so it runs only when asked for explicitly (the default smoke uses the second cursor).
+if (process.env.REAL_POINTER !== "1") { console.log("[sketch-probe] BLOCKED: set REAL_POINTER=1 (moves your real mouse)"); process.exit(2); }
 
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-sketch-probe-")));
 const DRAG = process.env.SKETCH_DRAG || "/tmp/voi_sketch_drag";
