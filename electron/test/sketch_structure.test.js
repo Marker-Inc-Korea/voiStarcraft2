@@ -53,3 +53,8 @@ test("route card in the board validates through the existing board protocol", ()
   const { open, ...card } = m.card();
   assert.doesNotThrow(() => P.validateBoardCards([card]));
 });
+
+test("main spawns the helper with a stdin pipe (capture/rect commands) and the settings tab shows the accessibility state", () => {
+  assert.match(read("main.js"), /stdio: \["pipe", "pipe", "ignore"\]/);
+  assert.match(read("renderer", "renderer.js"), /info\.accessibility/); assert.match(read("sketch", "controller.js"), /accessibilityMessage/);
+});

@@ -56,6 +56,10 @@ test("capture state: pending until the helper acks; unavailable falls back to th
   d.release(); assert.equal(d.mode(), "off");
   const e = N.createCaptureState(); e.request(true); e.ack("on"); e.release(); assert.equal(e.mode(), "off", "no press in flight: immediately off");
 });
+test("reset (helper died) drops straight to off, even with a consumed press in flight", () => {
+  const c = N.createCaptureState(); c.request(true); c.ack("on"); c.mouse({ kind: "down" }); c.reset();
+  assert.equal(c.mode(), "off");
+});
 test("when accessibility is known to be missing the native path is skipped up front", () => {
   const c = N.createCaptureState();
   c.setAccessibility(false); c.request(true); assert.equal(c.mode(), "fallback");

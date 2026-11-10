@@ -44,6 +44,7 @@ function createHelperSupervisor({ command, args = [], spawn, onChord = () => {},
     child = proc;
     set("starting");
     proc.stdout.on("data", chunk => { if (child === proc) onData(chunk); });
+    if (proc.stdin && typeof proc.stdin.on === "function") proc.stdin.on("error", () => { /* helper gone: the exit handler reports it */ });
     proc.on("error", error => {
       if (child !== proc) return;
       child = null; onLost("helper-error");

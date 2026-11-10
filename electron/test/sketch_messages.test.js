@@ -32,3 +32,9 @@ test("HUD result lines are short Korean sentences for each outcome", () => {
   assert.match(Msg.resultLine({ kind: "no-strokes" }), /선이 없/);
   assert.match(Msg.resultLine({ kind: "sent" }), /해석/);
 });
+
+test("accessibility message carries the Korean focus warning and how to grant it", () => {
+  const no = Msg.accessibilityMessage(false);
+  assert.match(no.text, /손쉬운 사용 권한이 없어 그리는 동안 게임 포커스가 잠깐 넘어갈 수 있습니다/); assert.match(no.how, /손쉬운 사용/); assert.equal(no.word, "권한 필요");
+  assert.equal(Msg.accessibilityMessage(true).word, "허용됨"); assert.equal(Msg.accessibilityMessage(null).granted, null);
+});

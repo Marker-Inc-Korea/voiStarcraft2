@@ -32,7 +32,7 @@
     // BOARD (tactical board window)
     tab_board: "전술판", board_enabled: "사용", board_anchor: "위치", board_pageSize: "한 쪽 카드", board_width: "너비", board_autoAdvanceSec: "자동 넘김", board_offsetX: "가로 여백", board_offsetY: "세로 여백", board_hideWhenEmpty: "비면 숨김", board_ageOutSec: "종료 후 숨김", board_opacity: "투명도", board_pageUpShortcut: "이전 쪽 키", board_pageDownShortcut: "다음 쪽 키", anchor_upperleft: "좌상단", anchor_left: "왼쪽",
     // minimap sketch
-    sketch_enabled: "그리기", sketch_fallbackShortcut: "대체 키", sketch_captureImage: "이미지 전송", sketch_helper: "키 감지", sketch_capture: "화면 기록", sketch_position: "미니맵 위치", fit: "위치 맞추기", fitReset: "기본값", retry: "다시 시도",
+    sketch_enabled: "그리기", sketch_fallbackShortcut: "대체 키", sketch_captureImage: "이미지 전송", sketch_helper: "키 감지", sketch_capture: "화면 기록", sketch_access: "손쉬운 사용", sketch_position: "미니맵 위치", fit: "위치 맞추기", fitReset: "기본값", retry: "다시 시도",
     // reset
     reset_all: "전체", confirm: "확인", on: "켜짐",
   };
@@ -54,7 +54,7 @@
     server_url: "URL", server_status: "Status", connected: "Online", disconnected: "Offline", checking: "Checking", apply: "Apply",
     // BOARD (tactical board window)
     tab_board: "Board", board_enabled: "Enabled", board_anchor: "Position", board_pageSize: "Cards per page", board_width: "Width", board_autoAdvanceSec: "Auto page", board_offsetX: "Left offset", board_offsetY: "Top offset", board_hideWhenEmpty: "Hide if empty", board_ageOutSec: "Hide after end", board_opacity: "Opacity", board_pageUpShortcut: "Prev page key", board_pageDownShortcut: "Next page key", anchor_upperleft: "Upper-left", anchor_left: "Left",
-    sketch_enabled: "Draw", sketch_fallbackShortcut: "Fallback key", sketch_captureImage: "Send image", sketch_helper: "Key watcher", sketch_capture: "Screen rec", sketch_position: "Minimap pos", fit: "Fit", fitReset: "Default", retry: "Retry",
+    sketch_enabled: "Draw", sketch_fallbackShortcut: "Fallback key", sketch_captureImage: "Send image", sketch_helper: "Key watcher", sketch_capture: "Screen rec", sketch_access: "Accessibility", sketch_position: "Minimap pos", fit: "Fit", fitReset: "Default", retry: "Retry",
     reset_all: "All", confirm: "Confirm", on: "On",
   };
   const tables = { ko, en };

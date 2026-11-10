@@ -11,7 +11,7 @@
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   let layout = { ox: 0, oy: 0, w: 100, h: 100, width: 100, height: 100 };
-  let mode = "idle";
+  let mode = "idle", input = "panel"; // input: "panel" = this window takes the mouse; "native" = the helper reports it (window stays click-through)
   const model = M.createRouteModel();
   let recorder = S.createRecorder();
   let pointerId = null;
@@ -31,7 +31,7 @@
   // ---------- drawing (the user's own mouse; the window only accepts events while main says "draw") ----------
   const norm = event => { const n = G.normalize({ x: layout.ox, y: layout.oy, w: layout.w, h: layout.h }, event.clientX, event.clientY); return n; };
   body.addEventListener("pointerdown", event => {
-    if (mode !== "draw" || event.button !== 0) return;
+    if (mode !== "draw" || input !== "panel" || event.button !== 0) return;
     const n = norm(event);
     if (!recorder.begin(n.nx, n.ny, event.timeStamp)) return;
     pointerId = event.pointerId;
@@ -61,9 +61,21 @@
   api.onLayout(applyLayout);
   api.onMode(next => {
     mode = next && next.mode || "idle";
+    input = next && next.input === "native" ? "native" : "panel";
     body.dataset.mode = mode;
     $("calib").hidden = mode !== "calibrate";
     if (mode !== "draw") pointerId = null;
+    schedule();
+  });
+  // Native input: the helper consumed the mouse press and main forwards frame-normalized steps (timestamps are main's clock).
+  api.onNativeStep(step => {
+    if (mode !== "draw" || input !== "native" || !step) return;
+    if (step.step === "begin") recorder.begin(step.nx, step.ny, step.t);
+    else if (step.step === "move") recorder.move(step.nx, step.ny, step.t);
+    else if (step.step === "end") {
+      const result = recorder.end(step.nx, step.ny, step.t);
+      if (result.kind === "tap") { recorder.cancel(); api.cancel("tap"); } // a click without a drag cancels the sketch
+    }
     schedule();
   });
   api.onCollect(() => { if (recorder.open()) recorder.finish(performance.now()); api.strokes(recorder.strokes()); });

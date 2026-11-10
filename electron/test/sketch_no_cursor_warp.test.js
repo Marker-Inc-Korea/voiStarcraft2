@@ -29,11 +29,16 @@ test("no shipped source can move, warp, post to or capture the real mouse cursor
 test("the guard really detects each forbidden API (so it cannot pass vacuously)", () => {
   for (const sample of ["CGWarpMouseCursorPosition(p)", "require('robotjs')", "SetCursorPos(1,2)", "cursor.warp(1,2)", "ev.post(tap: .cghidEventTap)", "CGEventPost(0, e)", "setCursorPos"]) assert.ok(FORBIDDEN.test(sample), sample);
 });
-test("the native helper is listen-only: a listenOnly event tap, never an active one, and it returns every event unchanged", () => {
+test("the native helper never posts or alters events: the key tap is listen-only; the only ACTIVE tap is the left-mouse one, which may consume (return nil) presses inside the rect and nothing else", () => {
   const swift = fs.readFileSync(path.join(root, "native", "chord_helper.swift"), "utf8");
-  assert.match(swift, /options: \.listenOnly/); assert.doesNotMatch(swift, /\.defaultTap/);
-  assert.match(swift, /Unmanaged\.passUnretained\(event\)/);
-  assert.doesNotMatch(swift, /event\.(location|flags)\s*=[^=]/);
+  assert.match(swift, /options: \.listenOnly/);
+  assert.equal((swift.match(/\.defaultTap/g) || []).length, 1, "exactly one active tap");
+  const mouse = swift.slice(swift.indexOf("let mouseCallback"), swift.indexOf("func ensureMouseTap"));
+  assert.match(mouse, /leftMouseDown/); assert.match(mouse, /leftMouseDragged/); assert.match(mouse, /leftMouseUp/); assert.doesNotMatch(mouse, /rightMouse|otherMouse|mouseMoved|keyDown|flagsChanged/);
+  assert.match(mouse, /rect\.contains\(p\)/, "a press is consumed only when it starts inside the rect");
+  assert.match(mouse, /return Unmanaged\.passUnretained\(event\)/, "outside the rect events pass through untouched");
+  assert.equal((mouse.match(/return nil/g) || []).length, 3, "consumption points: down inside, drag while grabbing, up while grabbing");
+  assert.doesNotMatch(swift, /event\.(location|flags)\s*=[^=]/); assert.doesNotMatch(swift, /\.post\(|CGEventPost|CGWarp|CGDisplayMoveCursor|CGEvent\(mouseEventSource/);
 });
 test("the ghost agent cursor is a DOM element positioned with a CSS transform inside the sketch window", () => {
   const js = fs.readFileSync(path.join(root, "sketch", "window", "sketch.js"), "utf8"), css = fs.readFileSync(path.join(root, "sketch", "window", "sketch.css"), "utf8"), html = fs.readFileSync(path.join(root, "sketch", "window", "index.html"), "utf8");

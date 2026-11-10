@@ -559,7 +559,7 @@ function createSketchController() {
     BrowserWindow, getDisplays: displayList, getCursor: currentCursor, getSettings: () => settings, requestJson,
     pushHud: payload => pushToRenderer(payload), registerGlobal, unregisterGlobal,
     captureDeps: () => ({ getAccess: () => systemPreferences.getMediaAccessStatus("screen"), getSources: options => desktopCapturer.getSources(options) }),
-    spawn: (command, args) => { const withPrompt = helperPrompt; helperPrompt = false; return spawn(command, withPrompt ? [...args, "--prompt"] : args, { stdio: ["ignore", "pipe", "ignore"] }); },
+    spawn: (command, args) => { const withPrompt = helperPrompt; helperPrompt = false; return spawn(command, withPrompt ? [...args, "--prompt"] : args, { stdio: ["pipe", "pipe", "ignore"] }); },
     helperPath: path.join(__dirname, "native", "bin", "chord_helper"), existsSync: file => process.platform === "darwin" && !process.env.VOI_SKETCH_NO_HELPER && fs.existsSync(file),
     storeFile: path.join(app.getPath("userData"), "minimap.json"), fs,
     windowFile: path.join(__dirname, "sketch", "window", "index.html"), preloadFile: path.join(__dirname, "sketch", "window", "preload.js"),

@@ -69,6 +69,7 @@
         if (m.kind === "down") pressed = true;
         else if (m.kind === "up") { pressed = false; if (mode === "draining") mode = "off"; }
       },
+      reset() { mode = "off"; pressed = false; },
       release() {
         if (mode === "native" && pressed) mode = "draining";
         else mode = "off";

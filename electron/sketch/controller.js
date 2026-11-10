@@ -17,11 +17,12 @@ const RouteModel = require("./route_model.js");
 const Payload = require("./payload.js");
 const Capture = require("./capture.js");
 const Messages = require("./messages.js");
+const NativeCapture = require("./native_capture.js");
 const Displays = require("../displays.js");
 
 const CHANNELS = Object.freeze({
   layout: "sketch:layout", mode: "sketch:mode", collect: "sketch:collect", routeEvent: "sketch:route-event", routeReset: "sketch:route-reset",
-  submitted: "sketch:submitted", settle: "sketch:settle", clear: "sketch:clear", skin: "sketch:skin",
+  nativeStep: "sketch:native-step", submitted: "sketch:submitted", settle: "sketch:settle", clear: "sketch:clear", skin: "sketch:skin",
   strokes: "sketch:strokes", cancel: "sketch:cancel", calibration: "sketch:calibration",
 });
 const SKETCH_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'";
@@ -56,9 +57,15 @@ function createSketchController(deps) {
 
   // ---- chord machine + helper ----------------------------------------------------------------
   const machine = Chord.createChordMachine({ debounceMs: helperDebounceMs, now, setTimer, clearTimer, onEvent: onMachineEvent });
+  // Native mouse capture: while sketching the helper owns the mouse (active tap consumes presses inside the minimap rect) so a click never
+  // activates our app / steals SC2's focus; the window stays click-through. Without Accessibility (or without the helper) the Electron panel
+  // takes the mouse instead ("fallback").
+  const capture = NativeCapture.createCaptureState();
+  let strokeSession = null;
   const helper = Helper.createHelperSupervisor({
     command: helperPath, spawn,
-    onChord: direction => machine.chord(direction), onInterrupt: () => machine.interrupt(), onLost: reason => machine.reset(reason),
+    onChord: direction => machine.chord(direction), onInterrupt: () => machine.interrupt(), onLost: reason => { capture.reset(); machine.reset(reason); },
+    onMouse: onNativeMouse, onCapture: onNativeAck, onAccessibility: ok => { capture.setAccessibility(ok); onStatus(); },
     onStatus: status => { helperStatus = status; onStatus(); }, now, setTimer, clearTimer,
   });
 
@@ -67,7 +74,7 @@ function createSketchController(deps) {
   function flushState() {
     send(CHANNELS.skin, skinMsg);
     if (layoutMsg) send(CHANNELS.layout, layoutMsg);
-    send(CHANNELS.mode, { mode: modeMsg });
+    send(CHANNELS.mode, { mode: modeMsg, input: inputMsg });
     if (submittedMsg) send(CHANNELS.submitted, submittedMsg);
     for (const event of replay) send(CHANNELS.routeEvent, event);
   }
@@ -111,7 +118,8 @@ function createSketchController(deps) {
     layoutMsg = { mode: "display", ox: frame.ox, oy: frame.oy, w: target.rect.w, h: target.rect.h, width: frame.bounds.w, height: frame.bounds.h };
     send(CHANNELS.layout, layoutMsg);
   }
-  function setMode(next) { modeMsg = next; send(CHANNELS.mode, { mode: next }); }
+  let inputMsg = "panel";
+  function setMode(next, input) { modeMsg = next; if (input) inputMsg = input; send(CHANNELS.mode, { mode: next, input: inputMsg }); }
   function routeVisible() { const view = model.view(now()); return Boolean(view.route || view.cursor || view.strokes); }
   function scheduleVisibility() {
     if (visTimer) return;
@@ -150,14 +158,45 @@ function createSketchController(deps) {
     layoutMsg = { mode: "draw", ox: 0, oy: 0, w: target.rect.w, h: target.rect.h, width: target.rect.w, height: target.rect.h };
     send(CHANNELS.clear, { what: "all" });
     send(CHANNELS.layout, layoutMsg);
-    setMode("draw");
-    setIgnore(false);
+    startCapture();
     showWindow();
-    debug(`draw start (${source}) on display ${target.display.id}`);
+    debug(`draw start (${source}) on display ${target.display.id} input=${capture.mode()}`);
+  }
+  // ---- native capture plumbing ----
+  function startCapture() {
+    capture.request(true);
+    strokeSession = NativeCapture.createStrokeSession(target.rect);
+    if (capture.mode() === "pending") {
+      let sent = false;
+      try { sent = helper.send(NativeCapture.encodeRect(target.rect)) && helper.send(NativeCapture.encodeCapture(true)); } catch { sent = false; }
+      if (!sent) capture.ack("unavailable");
+    }
+    applyInput();
+  }
+  // pending/native: click-through (the helper feeds strokes); fallback: the panel takes the mouse for this sketch
+  function applyInput() {
+    const panel = capture.mode() === "fallback";
+    setMode("draw", panel ? "panel" : "native");
+    setIgnore(!panel);
+    onStatus();
+  }
+  function stopCapture() {
+    const was = capture.mode();
+    capture.release();
+    if (was === "pending" || was === "native") helper.send(NativeCapture.encodeCapture(false));
+    strokeSession = null;
+  }
+  function onNativeAck(status) { capture.ack(status); if (drawing) applyInput(); else onStatus(); }
+  function onNativeMouse(m) {
+    capture.mouse(m);
+    if (!drawing || !strokeSession || capture.mode() !== "native") return;
+    const step = strokeSession.feed(m);
+    if (step) send(CHANNELS.nativeStep, { ...step, t: now() }); // main's clock: the helper's event timestamp unit is not wall-clock
   }
   function cancelDraw(reason) {
     if (!drawing) return;
     drawing = false;
+    stopCapture();
     setIgnore(true);
     send(CHANNELS.clear, { what: "all" });
     setMode("idle");
@@ -178,6 +217,7 @@ function createSketchController(deps) {
     if (!drawing) return;
     drawing = false;
     const seq = sketchSeq, snapshot = target;
+    stopCapture();
     setIgnore(true); // the chord is released: the surface stops taking the mouse immediately
     const strokes = await collectStrokes();
     if (!strokes || !strokes.length) {
@@ -345,6 +385,8 @@ function createSketchController(deps) {
     return {
       enabled: s.enabled, active: machine.isActive(), calibrating: Boolean(calibrating),
       helper: { ...helperStatus, ...Messages.helperMessage(helperStatus, s.fallbackShortcut) },
+      captureMode: capture.mode(),
+      accessibility: Messages.accessibilityMessage(capture.accessibility() === "unknown" ? null : capture.accessibility() === "granted"),
       fallback: { accelerator: s.fallbackShortcut, registered: fallbackOk },
       capture: { permission, enabled: s.captureImage, ...Messages.captureMessage({ permission, enabled: s.captureImage }) },
       calibration: { calibrated: resolved.calibrated, rect: resolved.rect, displayKey: Geometry.displayKey(display), ...Messages.calibrationMessage({ calibrated: resolved.calibrated }) },

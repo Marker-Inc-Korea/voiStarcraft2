@@ -426,6 +426,9 @@
     const capture = h("button", { class: "btn", type: "button", text: t("retry") });
     capture.addEventListener("click", () => api.sketch.action("request-capture").then(next => { state.env.sketch = next; renderSettings(); }).catch(() => {}));
     rows.push(row(t("sketch_capture"), h("div", { class: "ctl" }, h("output", { class: "status-word", "data-state": info.capture.word === "사용 가능" ? "ok" : info.capture.word === "꺼짐" ? "checking" : "bad", text: info.capture.word }), info.capture.permission !== "granted" && info.capture.enabled ? capture : null)), note(info.capture.text));
+    // Accessibility: lets the helper take the mouse while drawing so the game keeps focus; without it the panel takes the click (focus may flicker).
+    const ax = info.accessibility;
+    if (ax) rows.push(row(t("sketch_access"), h("div", { class: "ctl" }, h("output", { class: "status-word", "data-state": ax.granted === true ? "ok" : ax.granted === false ? "bad" : "checking", text: ax.word }))), note(ax.granted === false ? `${ax.text} ${ax.how}` : ax.text));
     const fit = h("button", { class: "btn", type: "button", text: t("fit") });
     fit.addEventListener("click", () => api.sketch.action("calibrate").catch(() => {}));
     const reset = h("button", { class: "btn", type: "button", text: t("fitReset") });

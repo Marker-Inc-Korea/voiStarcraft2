@@ -21,6 +21,14 @@
     if (permission === "granted") return { word: "사용 가능", text: "그린 선이 포함된 미니맵 이미지를 함께 보냅니다." };
     return { word: "이미지 없음", text: "화면 기록 권한이 없어 이미지 없이 선의 좌표만 전달합니다. 시스템 설정 > 개인정보 보호 및 보안 > 화면 기록에서 이 앱을 허용하면 이미지도 함께 보냅니다." };
   }
+  const ACCESS_WARNING = "손쉬운 사용 권한이 없어 그리는 동안 게임 포커스가 잠깐 넘어갈 수 있습니다";
+  const ACCESS_HOW = "시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 이 앱(또는 이 앱을 실행한 터미널)을 허용한 뒤 '다시 시도'를 눌러 주세요.";
+  // granted: true | false | null (not reported yet)
+  function accessibilityMessage(granted) {
+    if (granted === false) return { granted: false, word: "권한 필요", text: `${ACCESS_WARNING}.`, how: ACCESS_HOW };
+    if (granted === true) return { granted: true, word: "허용됨", text: "그리는 동안 미니맵 안의 클릭만 가로채므로 게임이 포커스를 유지합니다.", how: "" };
+    return { granted: null, word: "확인 전", text: "그리기를 처음 시작할 때 확인합니다.", how: ACCESS_HOW };
+  }
   function calibrationMessage({ calibrated }) {
     return calibrated
       ? { word: "맞춤", text: "이 모니터와 해상도에 저장된 미니맵 위치를 사용합니다." }
@@ -35,5 +43,5 @@
       default: return "";
     }
   }
-  return { helperMessage, captureMessage, calibrationMessage, resultLine };
+  return { accessibilityMessage, helperMessage, captureMessage, calibrationMessage, resultLine };
 });

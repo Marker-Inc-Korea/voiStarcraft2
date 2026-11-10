@@ -60,7 +60,7 @@ test("while the chord is held the window is EXACTLY the minimap rect, accepts th
   assert.equal(w.ignore, false, "mouse events accepted only now"); assert.ok(w.calls.some(c => c[0] === "showInactive"));
   for (const bad of ["focus", "show", "moveTop"]) assert.ok(!w.calls.some(c => c[0] === bad), `${bad} must never be called`);
   assert.equal(w.options.focusable, false); assert.equal(w.options.type, process.platform === "darwin" ? "panel" : undefined);
-  assert.deepEqual(w.sentTo(CHANNELS.mode).pop(), { mode: "draw" });
+  assert.deepEqual(w.sentTo(CHANNELS.mode).pop(), { mode: "draw", input: "panel" }, "no helper running -> the Electron panel takes the mouse (fallback)");
 });
 test("releasing the chord turns the surface click-through at once, then POSTs strokes + transcript with a null image (no capture permission)", async () => {
   const r = rig({ access: "denied" });
