@@ -53,8 +53,21 @@ test("renderer is words only: no helper paragraphs, no innerHTML, no network, CS
   const dir = path.join(__dirname, "..", "board");
   const html = fs.readFileSync(path.join(dir, "index.html"), "utf8"), js = fs.readFileSync(path.join(dir, "board.js"), "utf8"), css = fs.readFileSync(path.join(dir, "board.css"), "utf8");
   assert.doesNotMatch(html, /<p[ >]|style=|onclick/); assert.doesNotMatch(js, /innerHTML|\bfetch\(|XMLHttpRequest|WebSocket|eval\(/);
-  assert.match(css, /body\[data-skin="terminal"\]/); assert.match(css, /--board-alpha/); assert.match(css, /@keyframes blink/); assert.match(css, /repeating-linear-gradient/);
+  assert.match(css, /body\[data-skin="terminal"\]/); assert.match(css, /--board-alpha/); assert.match(css, /repeating-linear-gradient/);
   assert.match(css, /prefers-reduced-motion/);
+});
+
+test("board chrome stays quiet: own accent/hue gone, no glow shadows, no uppercase, one looping animation (the live stage), tokens only", () => {
+  const css = fs.readFileSync(path.join(__dirname, "..", "board", "board.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.doesNotMatch(css, /--hue\s*:|--accent\s*:(?!\s*#00ff66)/, "the accent comes from tokens.css (terminal skin may recolour it)");
+  assert.doesNotMatch(css, /text-shadow|uppercase|letter-spacing|--fw-bold|--ease-in-out|--ease-out/);
+  for (const [, shadow] of css.matchAll(/box-shadow\s*:\s*([^;}]+)/g)) for (const part of shadow.split(/,(?![^(]*\))/)) {
+    if (/^\s*inset\s+0 0 0 [\d.]+px/.test(part)) continue; // hairline ring
+    assert.doesNotMatch(part, /(?<!inset )\b0 0 \d+px|--(accent|ok|warn|bad|sim)/, `glow-like shadow: ${part}`);
+  }
+  const loops = [...css.matchAll(/animation\s*:[^;}]*infinite/g)].map(m => m[0]);
+  assert.equal(loops.length, 1, "only the live stage loops");
+  assert.match(css, /\.stage\[data-state="active"\] \.node \{[^}]*animation:[^}]*infinite/);
 });
 
 test("board:publish validator: shape, caps, state enum", () => {
