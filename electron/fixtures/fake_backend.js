@@ -9,12 +9,14 @@ const FIXTURE_SECRET = ["ek", "fixture", "secret", "0000"].join("_");
 //   POST /__ctl/realtime  {event:{...}}      -> push a Realtime server event to the connected client
 //   POST /__ctl/speak     {transcript, tool_arguments, speech_ms?, think_ms?}  -> scripted spoken turn
 //   POST /__ctl/runtime   {kind}             -> switch direct_runtime reporting
+//   POST /__ctl/route    {event}             -> append a route event (route_plan|route_progress|agent_cursor) served by GET /api/route/events
+//   POST /api/route/sketch / GET /api/route/events?after=N  -> route contract shapes (final point = the end of the last stroke; NO interpretation: a fixture)
 //   GET  /__ctl/audio                        -> {bytes, chunks} received by the fake Realtime socket
 const http = require("node:http");
 const { WebSocketServer } = require("ws");
 
 function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
-  const state = { runtime, commands: [], seq: 0, events: [], audioBytes: 0, audioChunks: 0, sockets: new Set(), sessionUpdates: 0, intents: [], secrets: 0 };
+  const state = { runtime, commands: [], seq: 0, events: [], audioBytes: 0, audioChunks: 0, sockets: new Set(), sessionUpdates: 0, intents: [], secrets: 0, sketches: [], routeSeq: 0, routeEvents: [] };
   const startedAt = Date.now();
   const sec = () => (Date.now() - startedAt) / 1000;
   const json = (res, code, body) => { const data = JSON.stringify(body); res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(data) }); res.end(data); };
@@ -104,6 +106,18 @@ function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
     if (req.method === "POST" && p === "/__ctl/runtime") { const body = await readBody(req); state.runtime = String(body.kind || "missing"); return json(res, 200, { runtime: state.runtime }); }
     if (req.method === "POST" && p === "/__ctl/realtime") { const body = await readBody(req); broadcast(body.event); return json(res, 200, { sent: state.sockets.size }); }
     if (req.method === "POST" && p === "/__ctl/speak") { const body = await readBody(req); speak(body); return json(res, 200, { scripted: true }); }
+    if (req.method === "POST" && p === "/api/route/sketch") {
+      const body = await readBody(req);
+      const ok = Array.isArray(body.strokes) && body.strokes.length && body.strokes.every(st => Array.isArray(st) && st.length >= 2);
+      if (!ok) return json(res, 400, { error: "strokes required" });
+      state.sketches.push(body);
+      const last = body.strokes[body.strokes.length - 1];
+      const end = last[last.length - 1];
+      const plan_id = `plan-fx-${state.sketches.length}`;
+      return json(res, 202, { kind: "execute", plan_id, narration_ko: "그린 선의 끝으로 이동합니다 (fixture)", question_ko: null, route: { waypoints: [], final: { action: "move", nx: end[0], ny: end[1], x: 0, y: 0, label_ko: "끝점" } }, squad: { label_ko: "fixture", unit_count: 0 } });
+    }
+    if (req.method === "GET" && p === "/api/route/events") { const after = Number(url.searchParams.get("after") || 0); return json(res, 200, { events: state.routeEvents.filter(e => e.route_seq > after), latest: state.routeSeq }); }
+    if (req.method === "POST" && p === "/__ctl/route") { const body = await readBody(req); state.routeSeq += 1; state.routeEvents.push({ ...body.event, route_seq: state.routeSeq }); return json(res, 200, { route_seq: state.routeSeq }); }
     json(res, 404, { error: "not found" });
   });
 

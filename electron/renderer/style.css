@@ -184,6 +184,8 @@ body[data-dock="right"] .row:last-child, body[data-dock="left"] .row:last-child 
 .meter { flex: 1; height: 6px; border-radius: var(--radius-pill); background: var(--fill-muted); overflow: hidden; --lvl: 0; }
 .meter i { display: block; height: 100%; width: calc(var(--lvl) * 100%); border-radius: var(--radius-pill); background: linear-gradient(90deg, var(--ok), var(--warn) 70%, var(--destructive)); transition: width 60ms linear; }
 .status-word { font-weight: var(--fw-semibold); }
+.row.note { grid-column: 1 / -1; min-height: 0; padding: 0 0 var(--space-2); background: none; }
+.note-text { margin: 0; font-size: var(--fs-xs); line-height: 1.45; color: var(--fg-muted); white-space: normal; }
 .status-word[data-state="ok"] { color: var(--ok); } .status-word[data-state="bad"] { color: var(--destructive); } .status-word[data-state="checking"] { color: var(--warn); }
 .rows::-webkit-scrollbar { width: 6px; }
 .rows::-webkit-scrollbar-thumb { background: var(--fill-muted); border-radius: var(--radius-pill); }
