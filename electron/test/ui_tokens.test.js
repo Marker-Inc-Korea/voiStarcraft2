@@ -53,9 +53,9 @@ test("interactive surfaces (buttons, inputs, cards, rows, chips) use rounded tok
     const rule = hud.slice(hud.indexOf(selector), hud.indexOf("}", hud.indexOf(selector)));
     assert.match(rule, /border-radius: (var\(--radius-(md|lg|xl|pill)\)|50%)/, selector);
   }
-  for (const selector of [".card {", ".tier {", ".badge {", ".label {"]) {
+  for (const selector of [".card {", ".badge {"]) {
     const rule = board.slice(board.indexOf(selector), board.indexOf("}", board.indexOf(selector)));
-    assert.match(rule, /border-radius: var\(--radius-(xl|pill)\)/, selector);
+    assert.match(rule, /border-radius: var\(--radius-(md|xl|pill)\)/, selector);
   }
 });
 
