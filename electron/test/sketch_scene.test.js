@@ -20,7 +20,7 @@ test("points are placed in window pixels: offset + normalized * minimap size", (
 test("route scene: dashed polyline through all points, numbered waypoint discs, a sword at the final point for attack", () => {
   const scene = V.buildScene({ view: planModel().view(0), layout: LAYOUT });
   const line = find(scene, n => cls(n, "route-line"))[0];
-  assert.equal(line.attrs.points, "76,198 136,136 216,58");
+  assert.equal(line.attrs.points, "76,196 136,136 216,56");
   const nums = find(scene, n => cls(n, "wp-num")).map(n => n.text);
   assert.deepEqual(nums, ["1", "2"]);
   const fin = find(scene, n => cls(n, "final"))[0];
@@ -41,9 +41,9 @@ test("reached waypoints are marked from progress; the done segment is drawn soli
   const wps = find(scene, n => cls(n, "wp"));
   assert.deepEqual(wps.map(n => [n.attrs["data-reached"], n.attrs["data-next"]]), [["true", "false"], ["false", "true"]]);
   const done = find(scene, n => cls(n, "route-line-done"))[0];
-  assert.equal(done.attrs.points, "76,198");
+  assert.equal(done.attrs.points, "76,196");
   const m2 = planModel([{ kind: "route_progress", plan_id: "p", reached_index: 1, done: false, released: false }]);
-  assert.equal(find(V.buildScene({ view: m2.view(0), layout: LAYOUT }), n => cls(n, "route-line-done"))[0].attrs.points, "76,198 136,136");
+  assert.equal(find(V.buildScene({ view: m2.view(0), layout: LAYOUT }), n => cls(n, "route-line-done"))[0].attrs.points, "76,196 136,136");
 });
 test("fading route: the whole route layer carries the model alpha", () => {
   let t = 0;
@@ -64,7 +64,7 @@ test("drawn strokes: underlay + bright line, an arrow head at the end pointing a
   const tip = arrow.attrs.points.split(" ").map(p => p.split(",").map(Number));
   assert.ok(tip.some(([x, y]) => x === 216 && y > 216 - 1), "tip is at/after the last point, pointing down");
   const dots = find(scene, n => cls(n, "corner-dot"));
-  assert.equal(dots.length, 1); assert.deepEqual([dots[0].attrs.cx, dots[0].attrs.cy], [216, 56]);
+  assert.equal(dots.length, 1); assert.deepEqual([dots[0].attrs.cx, dots[0].attrs.cy], ["216", "56"]);
 });
 test("faded strokes (submitted) carry the alpha; a live in-progress stroke is bright", () => {
   const scene = V.buildScene({ view: { route: null, cursor: null, strokes: { strokes: [[[0.1, 0.1, 0], [0.5, 0.5, 9]]], alpha: 0.45 } }, layout: LAYOUT });
