@@ -423,6 +423,7 @@ def _with_plan_defaults(
         priority=priority,
         constraints=constraints,
         metadata=action.metadata,
+        queue=action.queue,
     )
 
 
