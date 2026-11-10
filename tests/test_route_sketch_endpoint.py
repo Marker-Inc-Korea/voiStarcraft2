@@ -204,7 +204,7 @@ def test_route_events_are_also_published_on_the_sse_journal(rig):
     assert "route_plan" in types and "agent_cursor" in types
 
 
-def test_session_loop_bridge_dry_run_answers_none_not_an_invented_route():
+def test_session_loop_bridge_dry_run_executes_a_route_drawn_from_its_marines_over_http():
     from starcraft_commander.demo_sc2 import build_dry_run_session
     from starcraft_commander.web_gui import SessionLoopBridge
 
@@ -214,9 +214,15 @@ def test_session_loop_bridge_dry_run_answers_none_not_an_invented_route():
     server = WebGuiServer(bridge=bridge, port=0)
     server.start()
     try:
-        status, body = call(server, "POST", "/api/route/sketch", payload(), token=None)
-        assert status == 202 and body["kind"] == "none" and body["route"] is None
-        assert call(server, "GET", "/api/route/events?after=0", token=None)[1] == {"events": [], "latest": 0}
+        world = rx.world_from_bot(bridge.route_service.executor.bot)
+        marines = [u for u in world.own_units if u[0] == "MARINE"]
+        start = (sum(u[2] for u in marines) / len(marines), sum(u[3] for u in marines) / len(marines))
+        stroke = [[*rs.world_to_frame(*start, world), 0.0], [*rs.world_to_frame(80.0, 40.0, world), 300.0],
+                  [*rs.world_to_frame(110.0, 100.0, world), 600.0]]
+        status, body = call(server, "POST", "/api/route/sketch", payload(strokes=[stroke], transcript="마린 6기"), token=None)
+        assert status == 202 and body["kind"] == "execute", body
+        events = call(server, "GET", "/api/route/events?after=0", token=None)[1]["events"]
+        assert {"route_plan", "agent_cursor"} <= {event["kind"] for event in events}
     finally:
         server.stop()
         bridge.stop()

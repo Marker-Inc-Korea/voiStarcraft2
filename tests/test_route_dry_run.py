@@ -41,6 +41,13 @@ def test_demo_bot_exposes_a_sketch_world():
     assert not world.pathable(x1 + 50.0, y1 + 50.0)
     assert any(name == "MARINE" for name, *_ in world.own_units)
 
+def test_a_bot_without_map_info_yields_no_world_so_no_route_is_invented():
+    from types import SimpleNamespace
+
+    bot = SimpleNamespace(game_info=SimpleNamespace(map_ramps=()), units=[], enemy_units=[], enemy_structures=[])
+    assert world_from_bot(bot) is None
+
+
 
 def test_a_bent_route_from_the_marines_executes_with_queued_orders_and_events():
     bridge, session = _bridge()
