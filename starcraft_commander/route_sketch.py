@@ -57,6 +57,8 @@ IGNORED_STROKE_FRACTION: Final[float] = 0.35
 SECOND_PATH_END_DISTANCE: Final[float] = 15.0
 """World units: two strokes leaving the squad whose ends are further apart are two different destinations."""
 TWO_PATHS_QUESTION: Final[str] = "경로가 두 개로 보여요. 어느 쪽으로 갈까요?"
+CHAIN_GAP: Final[float] = 15.0
+"""World units: consecutive path strokes must end/start this close together to count as one chained route."""
 ARRIVAL_RADIUS: Final[float] = 5.0
 """World units: a leading route point this close to the squad is where it already stands, not a waypoint."""
 RDP_EPSILON: Final[float] = 0.012
@@ -709,8 +711,9 @@ def _read_semantics(answer: object, strokes: Sequence[Stroke], live: Sequence[in
     selects = [i for i, r in roles.items() if r == "squad_select"]
     if len(targets) > 1 or len(selects) > 1:
         raise _Unusable("ask", "vlm_multiple_targets", "목표가 여러 개로 보여요. 어디가 목적지인가요?")
-    if not order and not targets:
-        raise _Unusable("ask", "vlm_no_path", "어디로 보낼지 그림에서 찾지 못했어요. 다시 그려 주실래요?")
+    if not order:
+        # A target/avoid/select mark alone is not a route: the geometry only ever comes from a drawn path.
+        raise _Unusable("ask", "vlm_no_path", "어디로 보낼지 경로가 보이지 않아요. 가는 길을 선으로 그려 주실래요?")
     squad = answer.get("squad")
     kind = squad.get("kind") if isinstance(squad, Mapping) else None
     if kind == "circled_by_stroke":
@@ -784,7 +787,21 @@ def _decision(req: SketchRequest, kind: str, narration: str, *, question: str | 
 
 
 def interpret_sketch(req: SketchRequest, world: SketchWorld, *, vlm: VlmReader | None = None) -> RouteDecision:
-    """Strokes (+ transcript) -> :class:`RouteDecision`.  Pure: the only side channel is ``vlm.read``."""
+    """Strokes (+ transcript) -> :class:`RouteDecision`.  Pure: the only side channel is ``vlm.read``.
+
+    Never raises: an unexpected internal error is an ``ask`` (nothing executes), not a 500 on the HUD.
+    """
+
+    try:
+        return _interpret_sketch(req, world, vlm)
+    except Exception:  # noqa: BLE001 - fail closed
+        return _decision(
+            req, "ask", "그림을 처리하다 문제가 생겼어요. 다시 그려 주실래요?",
+            question="그림을 처리하다 문제가 생겼어요. 다시 그려 주실래요?", reason="internal_error",
+        )
+
+
+def _interpret_sketch(req: SketchRequest, world: SketchWorld, vlm: VlmReader | None) -> RouteDecision:
 
     if transcript_is_raw_control_or_injection(req.transcript) or transcript_overrides_instructions(req.transcript):
         return _decision(
@@ -832,6 +849,14 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
         for p in simplify_to_at_most(pts, per_stroke):
             if not frame_path or math.dist(frame_path[-1], p) > 1e-9:
                 frame_path.append(p)
+    # ---- chained path strokes must be contiguous (end of one ~ start of the next); two strokes that both start at the
+    # squad are two routes, never a chain
+    chain = [(_xy(strokes[i])[::-1] if i in sem.reversed_strokes else _xy(strokes[i])) for i in sem.path_strokes]
+    for before, after in zip(chain, chain[1:]):
+        a_end = frame_to_world(before[-1][0], before[-1][1], world)
+        b_start = frame_to_world(after[0][0], after[0][1], world)
+        if a_end is None or b_start is None or math.dist(a_end, b_start) > CHAIN_GAP:
+            raise _Unusable("ask", "path_strokes_not_contiguous", TWO_PATHS_QUESTION)
     # ---- target circle -> final point (enemy centroid inside the circle, else the circle centre)
     final_frame: tuple[float, float] | None = None
     if sem.target_stroke is not None:
