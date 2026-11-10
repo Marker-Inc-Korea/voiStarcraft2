@@ -16,12 +16,13 @@ test("tokens.css: Aside radius scale (x1.4 squircle), 4px spacing, blur steps, e
   assert.match(tokens, /--radius-pill: 1000px/);
   assert.match(tokens, /--space-1: \.25rem/);
   for (const px of [4, 8, 12, 16, 24, 64]) assert.match(tokens, new RegExp(`--blur-\\w+: ${px}px`));
-  assert.match(tokens, /cubic-bezier\(\.4, 0, \.2, 1\)/); assert.match(tokens, /cubic-bezier\(0, 0, \.2, 1\)/);
+  assert.match(tokens, /--ease: cubic-bezier\(/); assert.doesNotMatch(tokens, /--ease-(in-out|out)\b/);
   assert.match(tokens, /--fg-l: 98\.5%/); assert.match(tokens, /prefers-color-scheme: light[\s\S]*--fg-l: 14\.5%/);
   for (const alpha of [".85", ".55", ".15", ".10"]) assert.ok(tokens.includes(`/ ${alpha})`), alpha);
   assert.match(tokens, /--border: oklch\(var\(--fg-l\)[^;]*\/ \.10\)/);
   assert.match(tokens, /system-ui/); assert.doesNotMatch(tokens, /AsideDisplay|Geist"?,\s*-apple/);
-  for (const weight of [400, 500, 600, 700]) assert.match(tokens, new RegExp(`--fw-\\w+: ${weight}`));
+  for (const weight of [400, 500, 600]) assert.match(tokens, new RegExp(`--fw-\\w+: ${weight}`));
+  assert.doesNotMatch(tokens, /--fw-bold|--fw-\w+: [789]00/);
 });
 
 test("no angular regressions: no clip-path polygons, no square corners on surfaces", () => {
@@ -53,9 +54,9 @@ test("interactive surfaces (buttons, inputs, cards, rows, chips) use rounded tok
     const rule = hud.slice(hud.indexOf(selector), hud.indexOf("}", hud.indexOf(selector)));
     assert.match(rule, /border-radius: (var\(--radius-(md|lg|xl|pill)\)|50%)/, selector);
   }
-  for (const selector of [".card {", ".tier {", ".badge {", ".label {"]) {
+  for (const selector of [".card {", ".badge {"]) {
     const rule = board.slice(board.indexOf(selector), board.indexOf("}", board.indexOf(selector)));
-    assert.match(rule, /border-radius: var\(--radius-(xl|pill)\)/, selector);
+    assert.match(rule, /border-radius: var\(--radius-(md|xl|pill)\)/, selector);
   }
 });
 
@@ -74,6 +75,29 @@ test("HUD and board link the shared token sheet; stylesheet-only CSP stays valid
 test("type: tabular numerals for counters, latency, values and card status", () => {
   const hud = stripComments(SURFACES["renderer/style.css"]), board = stripComments(SURFACES["board/board.css"]);
   assert.match(hud, /\.ctl output \{[^}]*tabular-nums/); assert.match(hud, /\.ops \{[^}]*tabular-nums/); assert.match(board, /\.status \{[^}]*tabular-nums/); assert.match(board, /\.label \{[^}]*tabular-nums/);
+});
+
+test("HUD stylesheet: quiet instrument. No glows, one easing, named transitions, no idle loops, no animated width", () => {
+  const hud = stripComments(SURFACES["renderer/style.css"]);
+  assert.doesNotMatch(hud, /--ease-(in-out|out)|--fw-bold|font-weight: *[789]00/);
+  assert.doesNotMatch(hud, /transition: *all|transition-property: *all/);
+  for (const [, value] of hud.matchAll(/transition: *([^;}]+)/g)) for (const part of value.split(/,(?![^(]*\))/)) assert.match(part.trim(), /^[a-z-]+ .*var\(--(ease|slide|dur[a-z-]*)\)|^[a-z-]+ \d+ms var\(--ease\)/, `transition ${part.trim()}`);
+  assert.doesNotMatch(hud, /transition[^;]*\bwidth\b/, "no animated width (the level meter scales with transform)");
+  // glow = a box-shadow / text-shadow / filter blur with a colour that is not a neutral shadow token
+  for (const [, value] of hud.matchAll(/box-shadow\s*:\s*([^;}]+)/g)) for (const layer of value.split(/,(?![^(]*\))/)) { // a layer with a blur radius must be a neutral shadow, never a colour
+    const lengths = layer.trim().replace(/^inset\s+/, "").split(/\s+/).filter(t => /^-?[\d.]+(px)?$/.test(t));
+    if (lengths.length >= 3 && parseFloat(lengths[2]) > 0) assert.match(layer, /rgb\(var\(--shadow-rgb\)|rgb\(0 0 0/, `box-shadow glow ${layer.trim()}`);
+  }
+  assert.doesNotMatch(hud, /(?<!backdrop-)filter: *blur|radial-gradient/, "no blurred bloom or radial colour wash in the chrome");
+  assert.doesNotMatch(hud, /@keyframes (breathe|orbit|sweep|flicker|scan)/);
+  // looping animation only on live voice states (connecting, listening, thinking), the blinking terminal cursor/LEDs and nothing idle
+  for (const [, selector] of hud.matchAll(/([^{}]+)\{[^{}]*animation: *(?:spin|blink)\b[^{}]*infinite/g)) assert.match(selector, /data-voice="(connecting|listening|thinking)"|\.cursor/, `looping animation on ${selector.trim()}`);
+});
+test("HUD markup has no planet/sheen/sweep layers; the border setting draws a neutral hairline, not a bloom", () => {
+  const html = read("renderer", "index.html"), hud = stripComments(SURFACES["renderer/style.css"]);
+  assert.doesNotMatch(html, /orb-ring|class="moon"|class="sheen"|class="sweep"|outline-glow/);
+  assert.match(html, /id="outline-edge"/); assert.match(hud, /\.outline-edge \{[^}]*stroke: var\(--border-strong\)/);
+  assert.doesNotMatch(hud, /hsl\(var\(--hue\)[^)]*\/ *\.\d+\)/, "no hue-driven colour washes in the chrome");
 });
 
 test("ui_fx.fillPercent: slider fill maths", () => {
