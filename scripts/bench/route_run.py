@@ -225,7 +225,7 @@ def fmt(v, nd=3):
 
 
 def table(variants: dict[str, dict]) -> str:
-    cols = ["n", "kind_acc", "unsafe", "unanswered", "wp_mean", "wp_p95", "order_ok", "dest_ok", "action_ok", "squad_ok",
+    cols = ["n", "kind_acc", "kind_acc_lenient", "unsafe", "unanswered", "wp_mean", "wp_p95", "order_ok", "dest_ok", "action_ok", "squad_ok",
             "latency_p50_ms", "latency_p95_ms", "tokens_mean"]
     lines = ["| variant | " + " | ".join(cols) + " |", "|---|" + "---|" * len(cols)]
     for name, v in variants.items():
@@ -235,7 +235,7 @@ def table(variants: dict[str, dict]) -> str:
 
 
 def category_table(name: str, v: dict) -> str:
-    cols = ["n", "kind_acc", "unsafe", "unanswered", "wp_mean", "wp_p95", "order_ok", "action_ok", "squad_ok", "latency_p50_ms"]
+    cols = ["n", "kind_acc", "kind_acc_lenient", "unsafe", "unanswered", "wp_mean", "wp_p95", "order_ok", "action_ok", "squad_ok", "latency_p50_ms"]
     lines = [f"| {name}: category | " + " | ".join(cols) + " |", "|---|" + "---|" * len(cols)]
     for cat, a in v["aggregate"].items():
         lines.append(f"| {cat} | " + " | ".join(fmt(a[c], 2 if c.startswith(("wp", "lat")) else 3) for c in cols) + " |")
@@ -282,6 +282,11 @@ def main(argv=None) -> int:
     if a.cmd == "report":
         res = load_results()
         print(table(res))
+        for k, v in res.items():
+            print()
+            print(category_table(k, v))
+        print()
+        print("uptime per run:", {k: v["meta"]["uptime"].split("load averages:")[-1].strip() for k, v in res.items()})
         chosen, trace = RS.choose({k: v["aggregate"]["all"] for k, v in res.items()})
         print("\n".join(trace))
         print("chosen:", chosen)
