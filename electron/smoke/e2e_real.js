@@ -39,7 +39,8 @@ async function main() {
   await app.whenReady();
   if (SessionGuard.isBlocked(require("electron").nativeImage)) { app.exit(2); return; } // locked/dark screen: BLOCKED (exit 2), never a fake FAIL
   const I = main._internals;
-  try { execFileSync(WARP, ["756", "700"]); } catch { /* cursor stays */ }
+  // The user's real mouse is left alone unless REAL_POINTER=1; otherwise main's fake-cursor hook places the dock.
+  if (process.env.REAL_POINTER === "1") { try { execFileSync(WARP, ["756", "700"]); } catch { /* cursor stays */ } } else I.setFakeCursor({ x: 756, y: 700 });
   const waitFor = async (fn, label, timeout = 30000) => { const t0 = Date.now(); for (;;) { const value = await fn(); if (value) return value; if (Date.now() - t0 > timeout) throw new Error(`timeout: ${label}`); await sleep(40); } };
   const win = await waitFor(() => I.getMain(), "dock window");
   await waitFor(() => !win.webContents.isLoading(), "renderer load");

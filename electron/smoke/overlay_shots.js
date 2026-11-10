@@ -6,7 +6,9 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
-try { execFileSync(process.env.WARP_CURSOR || "/tmp/warp_cursor", ["700", "400"]); } catch { /* cursor stays where it is */ }
+// The user's real mouse is left alone unless REAL_POINTER=1; otherwise main's fake-cursor hook places the dock.
+const REAL_POINTER = process.env.REAL_POINTER === "1";
+if (REAL_POINTER) { try { execFileSync(process.env.WARP_CURSOR || "/tmp/warp_cursor", ["700", "400"]); } catch { /* cursor stays where it is */ } }
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-ov-")));
 const OUT = path.join(__dirname, "..", "docs", "screens");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -17,6 +19,7 @@ const cap = name => new Promise(resolve => execFile("screencapture", ["-x", path
   const backend = createFakeBackend({ port: 0 });
   process.env.VOI_COMMANDER_URL = `http://127.0.0.1:${await backend.listen()}`;
   const main = require("../main.js");
+  if (!REAL_POINTER) main._internals.setFakeCursor({ x: 700, y: 400 });
   await app.whenReady();
   const I = main._internals;
   while (!I.getOverlay()) await sleep(100);

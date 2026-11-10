@@ -148,17 +148,25 @@ expiry, back-off reconnect, session rotation after 55 min. Only the microphone p
 `npm test` runs the pure unit tests (validators, rounded HUD geometry + hit-test, skins, emergency shortcut registry, board card view-model, settings schema, dock and multi-display logic, voice state machine
 and client on a fake `ws`, stage derivation, window flags). They never launch Electron or touch the pointer.
 
-The real-Electron smoke runs take over the mouse pointer and capture the screen, so run them only when the Mac is
-otherwise idle. Screenshots go to a temp dir unless `SMOKE_SAVE_SHOTS=1`; saved captures show your desktop and are
-git-ignored (`docs/screens/`, `docs/e2e/*.png`).
+The real-Electron smoke runs use a **second cursor** by default (`smoke/vcursor.js` + `smoke/ax_cursor.swift`, see
+`docs/virtual-cursor.md`): hover positions go through main's fake-cursor hook, clicks and typing through the macOS
+Accessibility API on our own windows, and a pink pointer window shows where it acts. Your real mouse, keyboard and
+frontmost app are left alone (the driver checks the frontmost app every 250 ms). Needs Accessibility permission for the
+terminal that launches it. Screenshots go to a temp dir unless `SMOKE_SAVE_SHOTS=1`; saved captures show your desktop
+and are git-ignored (`docs/screens/`, `docs/e2e/*.png`).
 
 ```
-swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor
 SMOKE_DISPLAY=primary npx electron smoke/driver.js      # also: SMOKE_DISPLAY=1, SMOKE_DISPLAY=2
 npx electron smoke/overlay_shots.js
 
 # real end-to-end: real web_gui --dry-run + real Realtime proxy + TTS wav as the Chromium mic (docs/e2e/RESULTS.md)
 E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron smoke/e2e_real.js
+
+# opt-in, takes over your REAL mouse (only to test a human click / drag): run when the Mac is otherwise idle
+swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor; swiftc -O smoke/cursor_daemon.swift -o /tmp/cursor_daemon
+REAL_POINTER=1 SMOKE_DISPLAY=primary npx electron smoke/driver.js
+REAL_POINTER=1 npx electron smoke/focus_probe.js        # real click + real keys into the input
+REAL_POINTER=1 npx electron smoke/sketch_probe.js       # real drag across the minimap
 ```
 
 Not verified: real microphone speech, real SC2, the overlay over macOS fullscreen apps, canvas CPU cost.
