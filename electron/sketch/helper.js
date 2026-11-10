@@ -9,7 +9,9 @@ const BACKOFF_MS = Object.freeze([500, 1000, 2000, 4000, 8000]);
 const MAX_RESTARTS = 5;
 const RESTART_WINDOW_MS = 60000;
 
-function createHelperSupervisor({ command, args = [], spawn, onChord = () => {}, onInterrupt = () => {}, onLost = () => {}, onStatus = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+const NativeCapture = require("./native_capture.js");
+
+function createHelperSupervisor({ command, args = [], spawn, onChord = () => {}, onInterrupt = () => {}, onLost = () => {}, onStatus = () => {}, onMouse = () => {}, onCapture = () => {}, onAccessibility = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let child = null, timer = null, stopped = false, buffer = "";
   let status = { state: "idle", reason: "" };
   let crashes = [];
@@ -24,6 +26,9 @@ function createHelperSupervisor({ command, args = [], spawn, onChord = () => {},
     else if (msg.status === "denied") set("denied", typeof msg.reason === "string" ? msg.reason.slice(0, 40) : "");
     else if (msg.chord === "down" || msg.chord === "up") onChord(msg.chord);
     else if (msg.key === "other") onInterrupt();
+    else if (typeof msg.mouse === "string") { const m = NativeCapture.parseMouse(msg); if (m) onMouse(m); }
+    else if (msg.capture === "on" || msg.capture === "off" || msg.capture === "unavailable") onCapture(msg.capture);
+    else if (typeof msg.accessibility === "boolean") onAccessibility(msg.accessibility);
   }
   function onData(chunk) {
     buffer += chunk.toString("utf8");
@@ -62,6 +67,11 @@ function createHelperSupervisor({ command, args = [], spawn, onChord = () => {},
     retry() { crashes = []; if (timer) { clearTimer(timer); timer = null; } if (child) { const old = child; child = null; try { old.kill(); } catch { /* gone */ } } stopped = false; launch(); },
     stop() { stopped = true; if (timer) { clearTimer(timer); timer = null; } if (child) { const old = child; child = null; try { old.kill(); } catch { /* gone */ } } set("stopped"); },
     status: () => ({ ...status }),
+    // One line to the helper's stdin ({"rect":...} / {"capture":...}); false when it is not running (the caller then uses the fallback).
+    send(text) {
+      if (!child || !child.stdin || typeof child.stdin.write !== "function") return false;
+      try { child.stdin.write(text); return true; } catch { return false; }
+    },
   };
 }
 
