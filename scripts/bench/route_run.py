@@ -143,8 +143,21 @@ def run_variant(name: str, rows: list[dict], interpret, make_vlm, *, reps: int =
     pooled = RS.aggregate([s for r in all_reps for s in r["scores"]])
     return {"meta": {"variant": name, "reps": reps, "concurrency": concurrency, "n_rows": len(rows), "render_images": render_images,
                      "uptime": up_before, "uptime_after": uptime_line(), "loadavg_1_5_15": [round(x, 2) for x in load_before],
-                     "wall_s": round(time.time() - t_start, 1), "corpus_sha256_16": _corpus_hash()},
+                     "wall_s": round(time.time() - t_start, 1), "corpus_sha256_16": _corpus_hash(), "code": code_commit()},
             "aggregate": pooled, "reps": all_reps}
+
+
+def code_commit() -> dict:
+    """Commit that last touched the system under test (route_sketch.py / route_vlm.py) + the tree HEAD + dirty flag."""
+
+    def git(*a):
+        try:
+            return subprocess.run(["git", *a], capture_output=True, text=True, timeout=10, cwd=HERE.parents[1]).stdout.strip()
+        except Exception:  # noqa: BLE001
+            return "n/a"
+
+    return {"route_code": git("log", "-1", "--format=%h", "--", "starcraft_commander/route_sketch.py", "starcraft_commander/route_vlm.py"),
+            "head": git("rev-parse", "--short", "HEAD"), "dirty_sut": bool(git("status", "--porcelain", "--", "starcraft_commander"))}
 
 
 def _corpus_hash() -> str:
