@@ -37,7 +37,11 @@ const pointer = () => execFileSync(DRAG, ["pos"], { encoding: "utf8", timeout: 3
   const I = require("../main.js")._internals;
   await app.whenReady();
   if (SessionGuard.isBlocked(nativeImage)) { await backend.close(); app.exit(2); return; }
-  if (!fs.existsSync(DRAG)) execFileSync("swiftc", ["-O", path.join(__dirname, "sketch_drag.swift"), "-o", DRAG], { timeout: 120000, stdio: "inherit" });
+  const dragSource = path.join(__dirname, "sketch_drag.swift");
+  // A stale cached binary without the witness mode made the outside-click checks fail (and the "consumed" check pass vacuously).
+  if (!fs.existsSync(DRAG) || fs.statSync(DRAG).mtimeMs < fs.statSync(dragSource).mtimeMs) {
+    execFileSync("swiftc", ["-O", dragSource, "-o", DRAG], { timeout: 120000, stdio: "inherit" });
+  }
   while (!I.getSketch()) await sleep(50);
   const sketch = I.getSketch();
   await sleep(2000);
