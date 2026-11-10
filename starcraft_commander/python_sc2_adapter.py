@@ -1369,6 +1369,9 @@ class PythonSC2BotAdapter:
         the fact.
         """
 
+        route_evidence = getattr(self, "route_evidence_provider", None)
+        if callable(route_evidence) and "route_plan_id" in (lease.get("command_metadata") or {}):
+            return route_evidence(lease)
         raw_conditions = lease.get("completion_conditions", ())
         if not isinstance(raw_conditions, Sequence) or isinstance(
             raw_conditions, (str, bytes)
@@ -2282,6 +2285,14 @@ class PythonSC2BotAdapter:
     ) -> "_TargetPointResolution":
         """Resolve a target point while preserving resolver failure metadata."""
 
+        # Route sketch points (route_execution) are registered by the server, never taken from a plan's text.
+        route_point = (getattr(self, "route_target_points", None) or {}).get(target_name)
+        if route_point is not None:
+            return _TargetPointResolution(
+                position=MapPoint(float(route_point[0]), float(route_point[1])),
+                target=target_name,
+                source="route_sketch",
+            )
         resolver = self._resolve_map_resolver()
         for method_name in ("resolve", "lookup"):
             resolve = getattr(resolver, method_name, None)
