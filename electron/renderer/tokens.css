@@ -1,8 +1,8 @@
-/* Design tokens shared by the HUD (style.css) and the tactical board (board/board.css).
-   Values follow the Apple HIG material language and the public design tokens of the Aside app:
-   a 4 px spacing unit, a corner scale multiplied by a squircle factor of 1.4, blur steps 4/8/12/16/24/64,
-   in-out and out easings, and a neutral low-chroma oklch palette with an alpha ladder (.85 / .55 / .15 / .10).
-   Dark is the base; light follows prefers-color-scheme. A skin may re-declare the base channels below
+/* Design tokens shared by the HUD (style.css), the tactical board (board/board.css), the sketch window and the overlay.
+   Direction (docs/design-direction.md): a quiet instrument over the game. Neutral graphite surfaces, three text roles, ONE
+   signal accent (clear console cyan, not tied to the glass hue) used rarely: the route line, the selection, the live count.
+   4 px spacing unit, a corner scale multiplied by a squircle factor of 1.4, blur steps 4/8/12/16/24/64, one easing curve,
+   weights 400/500/600. Dark is the base; light follows prefers-color-scheme. A skin may re-declare the base channels below
    (--fg-l, --fg-chroma, --fg-hue, --scrim-rgb, ...) on <body>: every derived token is declared on `:root, body`
    so it is re-evaluated from the skin's channels. */
 
@@ -27,21 +27,24 @@
   /* blur steps */
   --blur-xs: 4px; --blur-sm: 8px; --blur-md: 12px; --blur-lg: 16px; --blur-xl: 24px; --blur-2xl: 64px;
 
-  /* motion: ease-out for entrances and press feedback, in-out for state changes */
-  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
-  --ease-out: cubic-bezier(0, 0, .2, 1);
-  --dur-press: 120ms; --dur-fast: 150ms; --dur: 220ms; --dur-slow: 250ms;
+  /* motion: one curve everywhere; short for feedback, a little longer for things that enter */
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --dur-press: 120ms; --dur-fast: 150ms; --dur: 220ms; --dur-slow: 320ms;
 
-  /* type: system font stack first (SF on macOS); weights 400/500/600/700; tabular numerals for counters */
+  /* type: system font stack first (SF on macOS); weights 400/500 with 600 for rare emphasis; tabular numerals for counters */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
   --font-mono: "Berkeley Mono", "Geist Mono", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, "IBM Plex Mono", "Apple SD Gothic Neo", "Noto Sans Mono CJK KR", monospace;
   --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 15px; --fs-lg: 17px; --fs-xl: 22px;
-  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600;
+
+  /* the one accent: console cyan. Text on it uses --accent-ink (>= 4.5:1). */
+  --accent: oklch(80% .12 215);
+  --accent-ink: oklch(22% .04 230);
 
   /* base channels: dark appearance */
   --fg-l: 98.5%; --fg-chroma: 0; --fg-hue: 0;
-  --scrim-rgb: 4 5 16;       /* legibility scrim behind words */
-  --halo-rgb: 2 3 14;        /* text halo */
+  --scrim-rgb: 8 8 10;       /* legibility scrim behind words (graphite, not tinted) */
+  --halo-rgb: 4 4 6;         /* text halo */
   --shadow-rgb: 0 0 0;
   --tint-l: 14%;             /* glass tint lightness */
   --hl-a: .22;               /* inner top highlight alpha */
@@ -57,7 +60,9 @@
     --fg-l: 14.5%;
     --scrim-rgb: 255 255 255;
     --halo-rgb: 255 255 255;
-    --shadow-rgb: 20 24 40;
+    --shadow-rgb: 20 20 24;
+    --accent: oklch(50% .11 230);
+    --accent-ink: oklch(99% 0 0);
     --tint-l: 95%;
     --hl-a: .7;
     --seg-on: oklch(100% 0 0 / .85);
@@ -79,7 +84,6 @@
   --border-strong: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .20);
   --ring: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .08);
   --highlight: oklch(100% 0 0 / var(--hl-a));
-  --accent: hsl(var(--hue, 250) 85% 68%);
   --focus: color-mix(in oklch, var(--accent) 70%, transparent);
 
   /* shadow scale: soft, layered, low alpha */
