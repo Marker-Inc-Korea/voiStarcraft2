@@ -655,3 +655,91 @@ def test_noise_label_is_fine_when_the_other_stroke_is_a_closed_mark_not_a_path()
     strokes = [line(a, rs.world_to_frame(110.0, 75.0, world), 21), far_ring]
     decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_roles(["path", "noise"]))
     assert decision.kind == "execute", decision
+
+
+# ---------------------------------------------------------------- chained path strokes must be contiguous; no crash on odd VLM answers
+
+
+def _vlm_two_paths(order, roles=("path", "path"), extra_roles=()):
+    allr = list(roles) + list(extra_roles)
+    return FakeVlm(
+        {
+            "strokes": [{"index": i, "role": r} for i, r in enumerate(allr)],
+            "path_order": list(order),
+            "final_action": "move",
+            "squad": {"kind": "none"},
+            "confidence": 0.9,
+        }
+    )
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)])
+def test_two_paths_that_both_start_at_the_squad_are_never_a_chain(order):
+    world = _cluster_world()
+    strokes = _two_paths(world, b_end=(60.0, 110.0))
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_two_paths(order))
+    assert decision.kind == "ask" and decision.route is None and decision.question_ko == TWO_PATHS_QUESTION
+    assert decision.reason == "path_strokes_not_contiguous"
+
+
+def test_two_paths_with_arrowhead_noise_strokes_still_ask():
+    world = _cluster_world()
+    strokes = _two_paths(world, b_end=(60.0, 110.0))
+    head = lambda p: [(p[0] - 0.01, p[1] - 0.01, 0), (p[0], p[1], 8), (p[0] - 0.012, p[1] + 0.008, 16)]  # noqa: E731
+    strokes += [head(rs.world_to_frame(110.0, 75.0, world)), head(rs.world_to_frame(60.0, 110.0, world))]
+    vlm = _vlm_two_paths((0, 1), extra_roles=("noise", "noise"))
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=vlm)
+    assert decision.kind == "ask" and decision.route is None
+
+
+def test_a_genuine_chain_end_of_one_is_the_start_of_the_next_executes():
+    world = _cluster_world()
+    p0, p1, p2 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (80.0, 40.0), (110.0, 75.0)])
+    strokes = [line(p0, p1, 12), line(p1, p2, 12)]
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_two_paths((0, 1)))
+    assert decision.kind == "execute", decision
+    assert [(round(p.x), round(p.y)) for p in decision.route.waypoints] == [(80, 40)]
+
+
+def test_a_chain_in_the_declared_order_executes_even_when_drawn_in_the_other_order():
+    world = _cluster_world()
+    p0, p1, p2 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (80.0, 40.0), (110.0, 75.0)])
+    strokes = [line(p1, p2, 12), line(p0, p1, 12)]  # second drawn first
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_two_paths((1, 0)))
+    assert decision.kind == "execute", decision
+    assert (decision.route.final.x, decision.route.final.y) == pytest.approx((110.0, 75.0), abs=1.0)
+
+
+def test_a_gap_between_chained_strokes_over_the_tolerance_asks():
+    world = _cluster_world()
+    p0, p1, p2 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (60.0, 40.0), (110.0, 75.0)])
+    q = rs.world_to_frame(90.0, 40.0, world)  # 30 wu gap
+    decision = rs.interpret_sketch(request([line(p0, p1, 12), line(q, p2, 12)], ""), world, vlm=_vlm_two_paths((0, 1)))
+    assert decision.kind == "ask" and decision.reason == "path_strokes_not_contiguous"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"strokes": [{"index": 0, "role": "target"}], "path_order": [], "final_action": "attack", "squad": {"kind": "none"}, "confidence": 0.9},
+        {"strokes": [{"index": 0, "role": "avoid"}], "path_order": [], "final_action": "move", "squad": {"kind": "none"}, "confidence": 0.9},
+        {"strokes": [{"index": 0, "role": "squad_select"}], "path_order": [], "final_action": "move", "squad": {"kind": "circled_by_stroke", "stroke": 0}, "confidence": 0.9},
+        {"strokes": [{"index": 0, "role": "noise"}], "path_order": [], "final_action": "move", "squad": {"kind": "none"}, "confidence": 0.9},
+    ],
+)
+def test_vlm_answers_without_any_path_stroke_ask_and_never_raise(answer):
+    world = _cluster_world()
+    spiral = [(0.5 + 0.1 * (i / 40) * math.cos(i / 3), 0.5 + 0.1 * (i / 40) * math.sin(i / 3), i * 8) for i in range(40)]
+    decision = rs.interpret_sketch(request([spiral], "마린 4기"), world, vlm=FakeVlm(answer))
+    assert decision.kind in {"ask", "none"} and decision.route is None
+
+
+def test_an_unexpected_internal_error_becomes_an_ask_not_an_exception(monkeypatch):
+    world = _cluster_world()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(rs, "_build_decision", boom)
+    decision = rs.interpret_sketch(_from_world(world, (31.0, 40.5), (110.0, 75.0), ""), world, vlm=None)
+    assert decision.kind == "ask" and decision.route is None and decision.reason == "internal_error"
