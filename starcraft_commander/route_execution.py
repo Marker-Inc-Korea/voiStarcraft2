@@ -289,11 +289,17 @@ def world_from_bot(adapter: object, *, calibration: tuple[float, float] = (0.0, 
     except (AttributeError, TypeError, ValueError):
         return None
 
+    try:
+        from sc2.position import Point2 as _point
+    except ImportError:  # dry-run demo without the sc2 extra: any x/y object answers in_pathing_grid
+        from types import SimpleNamespace
+
+        def _point(xy: tuple[float, float]) -> object:
+            return SimpleNamespace(x=xy[0], y=xy[1])
+
     def pathable(x: float, y: float) -> bool:
         try:
-            from sc2.position import Point2
-
-            return bool(bot.in_pathing_grid(Point2((x, y))))
+            return bool(bot.in_pathing_grid(_point((x, y))))
         except Exception:  # noqa: BLE001 - unknown terrain is not walkable.
             return False
 
