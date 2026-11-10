@@ -407,3 +407,32 @@ def test_decision_to_dict_matches_the_http_contract():
     assert set(body["route"]["waypoints"][0]) == {"nx", "ny", "x", "y", "label_ko"}
     assert set(body["route"]["final"]) == {"action", "nx", "ny", "x", "y", "label_ko"}
     assert set(body["squad"]) == {"label_ko", "unit_count"}
+
+
+# ---------------------------------------------------------------- leading waypoint at the squad's own position
+
+
+def _squad_world():
+    own = [("MARINE", 2000 + i, 30.5 + 0.5 * i, 40.0) for i in range(4)]
+    return make_world((0.0, 0.0, 160.0, 120.0), own=own, places=[("적 앞마당", 110.0, 75.0)])
+
+
+def test_straight_stroke_from_the_squad_has_no_intermediate_waypoint_and_no_via_in_the_narration():
+    world = _squad_world()
+    a, b = rs.world_to_frame(31.0, 40.0, world), rs.world_to_frame(110.0, 75.0, world)
+    decision = rs.interpret_sketch(request([line(a, b, 21)], "마린 4기"), world, vlm=None)
+    assert decision.kind == "execute", decision
+    assert decision.route.waypoints == ()
+    assert (decision.route.final.x, decision.route.final.y) == pytest.approx((110.0, 75.0), abs=1.0)
+    assert "거쳐" not in decision.narration_ko and "적 앞마당 근처" in decision.narration_ko
+    assert "마린 4기" in decision.narration_ko
+
+
+def test_bent_stroke_keeps_its_genuine_corner_but_drops_the_start_point():
+    world = _squad_world()
+    a, corner, b = (rs.world_to_frame(*p, world) for p in [(31.0, 40.0), (80.0, 40.0), (110.0, 75.0)])
+    stroke = line(a, corner, 12) + line(corner, b, 12)[1:]
+    decision = rs.interpret_sketch(request([stroke], "마린 4기"), world, vlm=None)
+    assert decision.kind == "execute", decision
+    assert [(round(p.x), round(p.y)) for p in decision.route.waypoints] == [(80, 40)]
+    assert "거쳐" in decision.narration_ko
