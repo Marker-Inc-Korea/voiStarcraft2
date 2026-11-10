@@ -1,8 +1,9 @@
 "use strict";
-// Real-app smoke run: `npx electron smoke/driver.js`. Boots the fake backend, launches the real main
-// process, moves the REAL cursor (CoreGraphics via smoke/warp_cursor.swift when compiled, else a test
-// hook), arms voice with Chromium's fake microphone, scripts spoken turns over the fake Realtime
-// socket and saves screenshots to docs/screens/. Findings are written to docs/screens/smoke-report.json.
+// Real-app smoke run: `npx electron smoke/driver.js`. Boots the fake backend, launches the real main process, arms voice with
+// Chromium's fake microphone, scripts spoken turns over the fake Realtime socket and saves screenshots to a temp dir.
+// DEFAULT = second cursor (smoke/vcursor.js): hover positions go through main's fake-cursor hook, clicks and typing through the
+// Accessibility helper, and a separate pointer window shows where it acts, so the user's real mouse stays free.
+// REAL_POINTER=1 moves the real cursor instead (smoke/warp_cursor.swift + cursor_daemon.swift must be compiled to /tmp).
 const { app } = require("electron");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -10,7 +11,7 @@ const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
 const Target = require("./target.js");
 const SessionGuard = require("./session_guard.js");
-
+const { createVirtualCursor } = require("./vcursor.js");
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-smoke-"))); // fresh prefs + localStorage
@@ -18,6 +19,7 @@ app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-smoke-"))); /
 // Verification only: images go to a temp dir unless SMOKE_SAVE_SHOTS=1 (docs/screens is not touched by default).
 const OUT = process.env.SMOKE_SAVE_SHOTS === "1" ? path.join(__dirname, "..", "docs", "screens") : fs.mkdtempSync(path.join(os.tmpdir(), "voi-smoke-shots-"));
 const WARP = process.env.WARP_CURSOR || "/tmp/warp_cursor";
+const REAL_POINTER = process.env.REAL_POINTER === "1" && fs.existsSync(WARP);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const report = { steps: [], checks: [] };
 const note = (name, detail) => { report.steps.push({ name, detail }); console.log(`[smoke] ${name}: ${JSON.stringify(detail)}`); };
@@ -35,23 +37,30 @@ async function main() {
   if (SessionGuard.isBlocked(nativeImage)) { await backend.close(); app.exit(2); return; } // locked/dark screen: BLOCKED (exit 2), never a fake FAIL
   const target = Target.pickTarget(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.env.SMOKE_DISPLAY, screen.getCursorScreenPoint());
   const main = require("../main.js"); // after whenReady(): main.js picks its display from the cursor, so park the cursor first
-  try { const p = Target.pointIn(target.bounds, 0.5, 0.5); execFileSync(WARP, [String(p.x), String(p.y)]); await sleep(150); } catch { /* no warp helper: cursor stays */ }
+  if (REAL_POINTER) { try { const p = Target.pointIn(target.bounds, 0.5, 0.5); execFileSync(WARP, [String(p.x), String(p.y)]); await sleep(150); } catch { /* cursor stays */ } } else main._internals.setFakeCursor(Target.pointIn(target.bounds, 0.5, 0.5));
   const I = main._internals;
   globalThis.__dumpTrace = name => { try { const t0 = Date.now(); console.log(`[smoke] TRACE for failed "${name}": cursor=${JSON.stringify(screen.getCursorScreenPoint())} dock=${JSON.stringify(I.dockInfo())}`); for (const e of I.getTrace().slice(-8)) console.log(`[smoke]   trace -${t0 - e.t}ms ${JSON.stringify(e)}`); } catch { /* ignore */ } };
   const DAEMON = process.env.CURSOR_DAEMON || "/tmp/cursor_daemon";
-  const realCursor = fs.existsSync(WARP);
+  const realCursor = REAL_POINTER;
+  // Second cursor (default): never touches the real pointer. Its pointer window shows where hover/click/typing happen.
+  const vc = realCursor ? null : await createVirtualCursor({ BrowserWindow: require("electron").BrowserWindow });
   // A real mouse under a human hand drifts the pointer between a warp and the check that follows, which makes the dock
   // (correctly!) follow the cursor to another display. The pinned point is re-asserted every 25 ms by a long-lived helper
   // so a check sees the position it asked for; drift is counted and reported rather than hidden.
-  const daemon = fs.existsSync(DAEMON) ? require("node:child_process").spawn(DAEMON, [], { stdio: ["pipe", "ignore", "inherit"] }) : null;
+  const daemon = realCursor && fs.existsSync(DAEMON) ? require("node:child_process").spawn(DAEMON, [], { stdio: ["pipe", "ignore", "inherit"] }) : null;
   let pinned = null, drifted = 0;
   const sendPoint = p => { if (daemon && daemon.stdin.writable) daemon.stdin.write(`${p.x} ${p.y}\n`); else execFileSync(WARP, [String(p.x), String(p.y)]); };
   const pinTimer = setInterval(() => { if (!pinned) return; const c = screen.getCursorScreenPoint(); if (Math.abs(c.x - pinned.x) > 1 || Math.abs(c.y - pinned.y) > 1) { drifted += 1; sendPoint(pinned); } else if (daemon) sendPoint(pinned); }, 25);
-  app.on("will-quit", () => { clearInterval(pinTimer); if (daemon) daemon.kill(); });
+  // Second-cursor mode must never make our app the frontmost one (that is what taking the user's focus looks like).
+  const frontmostPid = () => { try { return Number(/"pid"=(\d+)/.exec(execFileSync("lsappinfo", ["info", "-only", "pid", execFileSync("lsappinfo", ["front"]).toString().trim()]).toString())[1]); } catch { return 0; } };
+  const frontSamples = [];
+  const frontTimer = realCursor ? null : setInterval(() => frontSamples.push(frontmostPid()), 250);
+  app.on("will-quit", () => { clearInterval(pinTimer); clearInterval(frontTimer); if (daemon) daemon.kill(); if (vc) vc.close(); });
   const warp = async (x, y) => {
-    if (realCursor) { pinned = { x: Math.round(x), y: Math.round(y) }; sendPoint(pinned); I.setFakeCursor(null); } else I.setFakeCursor({ x, y });
+    if (realCursor) { pinned = { x: Math.round(x), y: Math.round(y) }; sendPoint(pinned); I.setFakeCursor(null); } else { I.setFakeCursor({ x, y }); await vc.moveTo(x, y); }
     await sleep(60);
   };
+  const pressId = (id, label = "") => (vc ? vc.press(id, { label }) : js(`document.getElementById(${JSON.stringify(id)}).click()`));
   const waitFor = async (fn, label, timeout = 8000) => { const t0 = Date.now(); for (;;) { const value = await fn(); if (value) return value; if (Date.now() - t0 > timeout) throw new Error(`timeout: ${label}`); await sleep(80); } };
   const win = await waitFor(() => I.getMain(), "dock window");
   await waitFor(() => !win.webContents.isLoading(), "renderer load");
@@ -66,7 +75,7 @@ async function main() {
   const info = () => I.dockInfo();
   const display = target.bounds; // the display UNDER TEST (SMOKE_DISPLAY), not necessarily primary / (0,0)
   const displayInfo = target;
-  note("environment", { realCursorWarp: realCursor, display, displayId: target.id, scaleFactor: target.scaleFactor, allDisplays: screen.getAllDisplays().map(x => ({ id: x.id, bounds: x.bounds, scale: x.scaleFactor })), electron: process.versions.electron });
+  note("environment", { cursorMode: realCursor ? "real pointer" : "second cursor (Accessibility)", axTrusted: vc ? vc.trusted : null, display, displayId: target.id, scaleFactor: target.scaleFactor, allDisplays: screen.getAllDisplays().map(x => ({ id: x.id, bounds: x.bounds, scale: x.scaleFactor })), electron: process.versions.electron });
   await waitFor(() => js("document.getElementById('btn-gear').dataset.backend==='ok'"), "backend dot ok");
   // Pin the dock to the display under test so a drifting/hand-moved pointer cannot relocate it mid-check; the follow-the-cursor
   // behaviour has its own section (9b) which switches 모니터 back to 커서.
@@ -107,7 +116,7 @@ async function main() {
   await waitFor(() => info().revealed, "reveal for orb");
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await sleep(300);
-  await js("document.getElementById('orb').click()");
+  await pressId("orb", "음성 켜기");
   await waitFor(() => backend.state.sockets.size > 0, "realtime socket");
   await waitFor(() => js("document.body.dataset.voice==='idle'"), "voice ready", 8000);
   await waitFor(() => backend.state.audioBytes > 0, "mic audio", 6000).catch(() => {});
@@ -149,7 +158,7 @@ async function main() {
   // ---- 5. text input: click focuses (only then), hide releases focus ----
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await sleep(300);
-  await js("document.getElementById('orb').click()"); // stop voice
+  await pressId("orb", "음성 끄기"); // stop voice
   await sleep(500);
   await warp(display.x + display.width / 2, display.y + display.height - 1);
   await waitFor(() => info().revealed, "bar revealed before measuring", 4000);
@@ -157,15 +166,26 @@ async function main() {
   await waitFor(() => js("getComputedStyle(document.getElementById('panel')).transform==='none' && getComputedStyle(document.getElementById('panel')).opacity==='1'"), "slide finished", 4000);
   const inputRect = await js("(()=>{const r=document.getElementById('cmd-input').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
   const wb = win.getBounds();
-  await warp(wb.x + inputRect.x, wb.y + inputRect.y); // a real user's cursor is on the input when clicking
-  await sleep(250);
-  note("before input click", { revealed: info().revealed, ignoring: info().ignoring, inputRect, wb });
-  win.webContents.sendInputEvent({ type: "mouseDown", x: Math.round(inputRect.x), y: Math.round(inputRect.y), button: "left", clickCount: 1 });
-  win.webContents.sendInputEvent({ type: "mouseUp", x: Math.round(inputRect.x), y: Math.round(inputRect.y), button: "left", clickCount: 1 });
-  await sleep(600);
-  d = info();
-  check("clicking the input grants focus", d.focusable === true && d.focused === true, { focusable: d.focusable, focused: d.focused });
-  await js("(()=>{const i=document.getElementById('cmd-input');i.value='앞마당 방어해';document.getElementById('cmd-form').requestSubmit();})()");
+  if (vc) {
+    // Second cursor: the Accessibility helper focuses the input and types into it. The real pointer and keyboard are untouched,
+    // so the window must NOT take OS focus (taking it is what a real click does; that path is focus_probe.js, REAL_POINTER only).
+    const typed = await vc.type("cmd-input", "앞마당 방어해", { label: "명령 입력" });
+    await sleep(300);
+    d = info();
+    check("second cursor types into the input through Accessibility", typed.ok === true && await js("document.getElementById('cmd-input').value") === "앞마당 방어해", typed);
+    check("second cursor typing does not take OS focus from the user's app", d.focused === false, { focusable: d.focusable, focused: d.focused });
+    await js("document.getElementById('cmd-form').requestSubmit()");
+  } else {
+    await warp(wb.x + inputRect.x, wb.y + inputRect.y); // a real user's cursor is on the input when clicking
+    await sleep(250);
+    note("before input click", { revealed: info().revealed, ignoring: info().ignoring, inputRect, wb });
+    win.webContents.sendInputEvent({ type: "mouseDown", x: Math.round(inputRect.x), y: Math.round(inputRect.y), button: "left", clickCount: 1 });
+    win.webContents.sendInputEvent({ type: "mouseUp", x: Math.round(inputRect.x), y: Math.round(inputRect.y), button: "left", clickCount: 1 });
+    await sleep(600);
+    d = info();
+    check("clicking the input grants focus", d.focusable === true && d.focused === true, { focusable: d.focusable, focused: d.focused });
+    await js("(()=>{const i=document.getElementById('cmd-input');i.value='앞마당 방어해';document.getElementById('cmd-form').requestSubmit();})()");
+  }
   await sleep(300);
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='refuse me';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(2800);
@@ -185,9 +205,9 @@ async function main() {
   backend.state.runtime = "dry_run_fake_bot";
 
   // ---- 7. minimal bar screenshot (voice off, no cards) ----
-  await js("document.getElementById('orb').click()").catch(() => {});
+  await pressId("orb", "음성").catch(() => {});
   await sleep(200);
-  const stopVoice = async () => { if (I.getVoice().snapshot().active) { await js("document.getElementById('orb').click()"); await sleep(500); } };
+  const stopVoice = async () => { if (I.getVoice().snapshot().active) { await pressId("orb", "음성 끄기"); await sleep(500); } };
   await stopVoice();
   await warp(display.x + display.width / 2, display.y + display.height - 1);
   await waitFor(() => info().revealed, "reveal for minimal bar");
@@ -197,8 +217,9 @@ async function main() {
   check("minimal HUD shows only orb, input, gear (no retreat/hold/stop buttons)", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-gear' && !document.getElementById('emergency') && document.getElementById('cmd-input').placeholder==='명령'"));
 
   // ---- 8. settings panel: gear click opens at once, pins the bar, every tab, live apply, Esc / outside / gear close ----
+  if (vc) await vc.point("btn-gear"); // glide first so the timing below measures the press, not the pointer animation
   const openedAt = Date.now();
-  await js("document.getElementById('btn-gear').click()");
+  await (vc ? vc.press("btn-gear", { label: "설정", glide: false }) : js("document.getElementById('btn-gear').click()"));
   await waitFor(() => info().settingsOpen && js("document.body.dataset.settings==='open'"), "settings open", 1500);
   check("gear opens settings within 300ms", Date.now() - openedAt < 300, { ms: Date.now() - openedAt });
   check("settings open pins the bar revealed", info().revealed === true);
@@ -227,15 +248,15 @@ async function main() {
   check("settings persisted to userData/settings.json", await (async () => { await sleep(500); const f = path.join(app.getPath("userData"), "settings.json"); return fs.existsSync(f) && JSON.parse(fs.readFileSync(f, "utf8")).glass.alpha === 0.62; })());
   I.applySettings({ glass: { alpha: 0.28, blur: 12, hue: 250, saturation: 55 } });
   // close paths
-  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  await pressId("btn-gear", "설정 닫기"); await sleep(300);
   check("gear again closes settings", info().settingsOpen === false);
-  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  await pressId("btn-gear", "설정"); await sleep(300);
   win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" }); win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" }); await sleep(300);
   note("escape result", { settingsOpen: info().settingsOpen });
   if (info().settingsOpen) await js("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))");
   await sleep(300);
   check("Esc closes settings", info().settingsOpen === false);
-  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  await pressId("btn-gear", "설정"); await sleep(300);
   await js("document.getElementById('transcript').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))"); await sleep(300);
   check("click outside closes settings", info().settingsOpen === false);
 
@@ -328,6 +349,10 @@ async function main() {
   I.toggleShortcut();
   await sleep(500);
   check("shortcut again stops voice", I.getVoice().snapshot().active === false);
+  if (vc) {
+    clearInterval(frontTimer);
+    check("second cursor never made this app frontmost (the user's app kept focus)", frontSamples.length > 20 && !frontSamples.includes(process.pid), { samples: frontSamples.length, ownPid: process.pid, distinct: [...new Set(frontSamples)] });
+  }
 
   note("cursor drift corrected", { times: drifted });
   report.cursorDriftCorrections = drifted;
