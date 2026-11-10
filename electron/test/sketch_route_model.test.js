@@ -86,7 +86,7 @@ test("agent cursor: normalized point, action and tooltip; fades after idle; a ne
   at(1500); m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.9, ny: 0.1, action: "attack", label_ko: "" });
   const c = m.view(1500).cursor;
   assert.deepEqual([c.nx, c.ny, c.action, c.seq], [0.9, 0.1, "attack", 2]);
-  assert.equal(m.view(1500 + 2000 + 2000), null);
+  assert.equal(m.view(1500 + 2000 + 2000).cursor, null);
   const bad = make(); bad.m.ingest(PLAN);
   bad.m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 2, ny: 0.1, action: "move", label_ko: "" });
   bad.m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.1, ny: 0.1, action: "teleport", label_ko: "" });
