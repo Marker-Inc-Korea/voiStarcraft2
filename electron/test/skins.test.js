@@ -34,10 +34,10 @@ test("emergency shortcut settings: defaults Cmd/Ctrl+Shift+R/H/X, valid accelera
 });
 test("terminal skin stays legible at the lowest opacity: scrim/legible/glow grow as the panel gets clearer", () => {
   const clear = K.legibility("terminal", 0.08), solid = K.legibility("terminal", 0.9);
-  assert.ok(Number(clear.scrim) > Number(solid.scrim) && Number(clear.legible) > Number(solid.legible) && Number(clear.glow) > Number(solid.glow));
+  assert.ok(Number(clear.scrim) > Number(solid.scrim) && Number(clear.legible) > Number(solid.legible));
   assert.ok(Number(clear.scrim) >= 0.4 && Number(solid.scrim) >= 0.4, "never a bare transparent background behind phosphor text");
   assert.ok(Number(clear.legible) <= 0.98);
-  assert.deepEqual(K.legibility("cosmic", 0.28), { legible: "0.88", scrim: "0.44", glow: "0.50" }); // unchanged round-1 formulas
+  assert.deepEqual(K.legibility("cosmic", 0.28), { legible: "0.88", scrim: "0.44" });
   assert.equal(K.legibility("nonsense", 0.28).scrim, K.legibility("cosmic", 0.28).scrim);
 });
 test("cssVars feed opacity/blur through unchanged for both skins; every skin is rounded (no chamfer concept)", () => {
@@ -55,13 +55,15 @@ test("both skins produce a rounded HUD shape through the same geometry main hit-
     for (const v of s.vertices) assert.equal(H.containsPoint(s.points, v[0], v[1]), false, `${skin} corner is rounded`);
   }
 });
-test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, rounded geometry, no cosmic canvas", () => {
+test("terminal stylesheet: phosphor green monospace, static scanlines, block cursor, rounded geometry, no cosmic canvas", () => {
   const css = fs.readFileSync(path.join(__dirname, "..", "renderer", "style.css"), "utf8");
   const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
   const terminal = css.slice(css.indexOf("TERMINAL SKIN"));
-  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "radial-gradient(120% 130%", "@keyframes blink", ".cursor", 'content: ">"', "var(--term-glow)", "var(--scrim)"]) assert.ok(css.includes(needle), needle);
+  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "@keyframes blink", ".cursor", 'content: ">"']) assert.ok(css.includes(needle), needle);
   assert.match(terminal, /body\[data-skin="terminal"\] #space[^{]*\{ display: none/);
-  assert.match(terminal, /prefers-reduced-motion: reduce[\s\S]*\.cursor/);
+  assert.match(css, /prefers-reduced-motion: reduce[^}]*\{[^}]*animation: none/);
   assert.match(html, /<i class="cursor"><\/i>/); assert.match(html, /id="term-word"/);
   assert.doesNotMatch(terminal, /Inter|Helvetica/);
+  assert.equal(K.cssVars("terminal", S.defaults().glass)["--term-glow"], undefined);
+  assert.doesNotMatch(terminal, /@keyframes (flicker|scan)|animation: (flicker|scan)/, "no CRT flicker or sweeping scanline");
 });

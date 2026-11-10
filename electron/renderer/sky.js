@@ -1,5 +1,5 @@
 "use strict";
-// Pure sky model for the cosmic glass: star layout, constellation edges, meteor schedule, twinkle. No DOM, no canvas,
+// Pure sky model for the optional starfield/nebula layer (off by default): star layout, constellation edges, meteor schedule, twinkle. No DOM, no canvas,
 // no Math.random in the hot path (a seeded PRNG makes layouts reproducible and unit-testable).
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
@@ -21,10 +21,12 @@
   const lerp = (a, b, t) => a + (b - a) * t;
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-  // How many stars for a panel: scales with area and the 별 slider (0..1), capped for CPU.
+  // How many stars for a panel: scales with area and the 별 slider (0..1), capped for CPU. Slider at 0 = none.
   function starCount(width, height, density) {
+    const d = clamp(density, 0, 1);
+    if (d === 0) return 0;
     const base = (Math.max(0, width) * Math.max(0, height)) / 5200;
-    return clamp(Math.round(base * (0.15 + 1.6 * clamp(density, 0, 1))), 0, MAX_STARS);
+    return clamp(Math.round(base * (0.15 + 1.6 * d)), 0, MAX_STARS);
   }
 
   // Star list in unit space (x,y in 0..1) with a depth, size, base alpha, twinkle phase/speed, tint hue and flare flag.
@@ -41,7 +43,7 @@
           r: lerp(depth.radius[0], depth.radius[1], rand()),
           alpha: lerp(depth.alpha[0], depth.alpha[1], rand()),
           phase: rand() * Math.PI * 2, speed: lerp(0.5, 1.9, rand()),
-          hue: tint < 0.16 ? 205 + rand() * 40 : tint < 0.24 ? 18 + rand() * 30 : tint < 0.30 ? 285 + rand() * 30 : -1, // -1 = white
+          hue: tint < 0.16 ? 205 + rand() * 30 : tint < 0.24 ? 30 + rand() * 20 : -1, // blue-white / warm-white tints; -1 = white
           flare: false,
         });
       }
@@ -106,14 +108,17 @@
 
   // Intensity model: stars/nebula follow their OWN sliders, independent of the glass opacity, so the cosmos stays visible
   // at low glass alpha. 0 on a slider means off. `glassAlpha` only softens the nebula a little on a dense panel.
-  function intensity({ stars = 0.5, nebula = 0.5, glassAlpha = 0.28 } = {}) {
+  function intensity({ stars = 0, nebula = 0, glassAlpha = 0.28 } = {}) {
     const a = clamp(glassAlpha, 0.08, 0.9);
     const s = clamp(stars, 0, 1), n = clamp(nebula, 0, 1);
-    return { star: s === 0 ? 0 : 0.55 + 0.45 * s, nebula: n * (1.15 - 0.35 * ((a - 0.08) / 0.82)), aurora: n * 0.9 };
+    return { star: s === 0 ? 0 : 0.55 + 0.45 * s, nebula: n * (1.15 - 0.35 * ((a - 0.08) / 0.82)) };
   }
+  // True when the decorative canvas has anything to draw. With stars and nebula both at 0 (the default) space.js clears the
+  // canvas once and never starts a frame loop.
+  const hasContent = ({ stars = 0, nebula = 0 } = {}) => clamp(stars, 0, 1) > 0 || clamp(nebula, 0, 1) > 0;
 
   // Cheap frame budget: draw at most ~30 fps; skip entirely when not visible or motion is reduced.
   function shouldDraw({ now, last, visible, still, minInterval = 33 }) { return Boolean(visible) && !still && now - last >= minInterval; }
 
-  return { DEPTHS, MAX_STARS, METEOR_MIN_MS, METEOR_MAX_MS, mulberry32, starCount, layout, constellation, twinkle, driftX, nextMeteorDelay, newMeteor, meteorPoint, intensity, shouldDraw };
+  return { DEPTHS, MAX_STARS, METEOR_MIN_MS, METEOR_MAX_MS, mulberry32, starCount, layout, constellation, twinkle, driftX, nextMeteorDelay, newMeteor, meteorPoint, intensity, hasContent, shouldDraw };
 });
