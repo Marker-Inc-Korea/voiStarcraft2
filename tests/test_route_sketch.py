@@ -436,3 +436,66 @@ def test_bent_stroke_keeps_its_genuine_corner_but_drops_the_start_point():
     assert decision.kind == "execute", decision
     assert [(round(p.x), round(p.y)) for p in decision.route.waypoints] == [(80, 40)]
     assert "거쳐" in decision.narration_ko
+
+
+# ---------------------------------------------------------------- squad = the own-unit cluster the path starts on
+
+
+def _cluster_world(extra=()):
+    own = (
+        [("MARINE", 3000 + i, 30.0 + 0.5 * i, 40.0) for i in range(4)]
+        + [("MEDIVAC", 3100 + i, 32.5 + 0.5 * i, 41.0) for i in range(2)]
+        + [("MARINE", 3200 + i, 120.0 + i, 100.0) for i in range(3)]
+        + list(extra)
+    )
+    return make_world((0.0, 0.0, 160.0, 120.0), own=own, places=[("적 앞마당", 110.0, 75.0)])
+
+
+def _from_world(world, start, end, transcript=""):
+    a, b = rs.world_to_frame(*start, world), rs.world_to_frame(*end, world)
+    return request([line(a, b, 21)], transcript)
+
+
+def test_unnamed_squad_is_the_single_cluster_the_path_starts_on():
+    world = _cluster_world()
+    decision = rs.interpret_sketch(_from_world(world, (31.0, 40.5), (110.0, 75.0)), world, vlm=None)
+    assert decision.kind == "execute", decision
+    assert sorted(decision.unit_tags) == sorted([3000, 3001, 3002, 3003, 3100, 3101])
+    assert decision.squad.unit_count == 6
+    assert "마린 4기" in decision.squad.label_ko and "의료선 2기" in decision.squad.label_ko
+    assert "·" in decision.squad.label_ko and decision.squad.label_ko in decision.narration_ko
+
+
+def test_two_clusters_near_the_start_ask_instead_of_guessing():
+    extra = [("MARINE", 3300 + i, 38.0 + 0.5 * i, 40.0) for i in range(3)]  # 4+ units away from the first cluster
+    world = _cluster_world(extra)
+    decision = rs.interpret_sketch(_from_world(world, (35.5, 40.0), (110.0, 75.0)), world, vlm=None)
+    assert decision.kind == "ask" and "부대" in decision.question_ko and decision.route is None
+
+
+def test_start_far_from_every_cluster_asks():
+    world = _cluster_world()
+    decision = rs.interpret_sketch(_from_world(world, (80.0, 90.0), (110.0, 75.0)), world, vlm=None)
+    assert decision.kind == "ask" and decision.route is None
+
+
+def test_a_named_squad_still_wins_over_the_start_cluster():
+    world = _cluster_world()
+    decision = rs.interpret_sketch(_from_world(world, (31.0, 40.5), (110.0, 75.0), "마린 2기"), world, vlm=None)
+    assert decision.kind == "execute" and decision.squad.unit_count == 2
+    assert all(3000 <= t < 3004 for t in decision.unit_tags)
+
+
+def test_start_cluster_also_applies_when_the_vlm_names_no_squad():
+    world = _cluster_world()
+    vlm = FakeVlm(
+        {
+            "strokes": [{"index": 0, "role": "path"}],
+            "path_order": [0],
+            "final_action": "move",
+            "squad": {"kind": "none"},
+            "confidence": 0.9,
+        }
+    )
+    decision = rs.interpret_sketch(_from_world(world, (31.0, 40.5), (110.0, 75.0)), world, vlm=vlm)
+    assert decision.kind == "execute" and decision.squad.unit_count == 6
