@@ -204,12 +204,15 @@ def test_route_events_are_also_published_on_the_sse_journal(rig):
     assert "route_plan" in types and "agent_cursor" in types
 
 
-def test_session_loop_bridge_dry_run_executes_a_route_drawn_from_its_marines_over_http():
+def test_session_loop_bridge_dry_run_executes_a_route_drawn_from_its_marines_over_http(monkeypatch):
     from starcraft_commander.demo_sc2 import build_dry_run_session
     from starcraft_commander.web_gui import SessionLoopBridge
 
+    for name in ("VOI_REALTIME_API_KEY", "MYPROXY_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)  # deterministic reader, never the network VLM
     session, _bot = build_dry_run_session()
     bridge = SessionLoopBridge(session=session)
+    assert bridge.route_service.vlm is None
     bridge.start()
     server = WebGuiServer(bridge=bridge, port=0)
     server.start()

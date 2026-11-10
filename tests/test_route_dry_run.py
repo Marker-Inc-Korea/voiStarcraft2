@@ -6,15 +6,27 @@ only what the demo can honestly show: the plan, the queued orders and the agent-
 
 from __future__ import annotations
 
+import pytest
+
 from starcraft_commander import route_sketch as rs
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.route_execution import world_from_bot
 from starcraft_commander.web_gui import SessionLoopBridge
 
 
+@pytest.fixture(autouse=True)
+def _no_network_vlm(monkeypatch):
+    """A developer shell may export proxy keys; the route service would then call the real VLM (network, flaky)."""
+
+    for name in ("VOI_REALTIME_API_KEY", "MYPROXY_API_KEY", "OPENAI_API_KEY", "VOI_ROUTE_VLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+
+
 def _bridge():
     session, _bot = build_dry_run_session()
-    return SessionLoopBridge(session=session), session
+    bridge = SessionLoopBridge(session=session)
+    assert bridge.route_service.vlm is None, "tests must use the deterministic reader, never the network"
+    return bridge, session
 
 
 def _frame_points(world, points, n=10):
@@ -41,12 +53,12 @@ def test_demo_bot_exposes_a_sketch_world():
     assert not world.pathable(x1 + 50.0, y1 + 50.0)
     assert any(name == "MARINE" for name, *_ in world.own_units)
 
+
 def test_a_bot_without_map_info_yields_no_world_so_no_route_is_invented():
     from types import SimpleNamespace
 
     bot = SimpleNamespace(game_info=SimpleNamespace(map_ramps=()), units=[], enemy_units=[], enemy_structures=[])
     assert world_from_bot(bot) is None
-
 
 
 def test_a_bent_route_from_the_marines_executes_with_queued_orders_and_events():
