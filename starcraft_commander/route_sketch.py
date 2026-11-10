@@ -802,11 +802,18 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     squad = SquadRef(label_ko=label, unit_count=len(units))
     verb = "공격" if final.action == "attack" else "이동"
     via = " → ".join(p.label_ko for p in waypoints)
-    narration = f"{label}가 " + (f"{via}를 거쳐 " if via else "") + f"{final.label_ko}까지 {verb}합니다."
+    narration = f"{label}가 " + (f"{via}{_eul_reul(via)} 거쳐 " if via else "") + f"{final.label_ko}까지 {verb}합니다."
     return RouteDecision(
         kind="execute", plan_id=_plan_id(req, "execute"), narration_ko=narration, route=route, squad=squad,
         unit_tags=tuple(sorted(u[1] for u in units)),
     )
+
+
+def _eul_reul(word: str) -> str:
+    last = word.strip()[-1:]
+    if "가" <= last <= "힣":
+        return "을" if (ord(last) - 0xAC00) % 28 else "를"
+    return "를"
 
 
 def _trace_problem(frame_path, final_frame, strokes, sem, world_points, world) -> str:
