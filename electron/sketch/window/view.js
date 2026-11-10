@@ -84,7 +84,7 @@
     return { x: p.x, y: p.y, action: cursor.action, label: cursor.label, alpha: cursor.alpha, seq: cursor.seq };
   }
 
-  // Materialise a node tree as SVG (browser only). Attributes only: no inline style, no innerHTML (the window CSP forbids both).
+  // Materialise a node tree as SVG (browser only). Attributes only: no inline style attribute and no markup parsing (the window CSP forbids inline styles).
   function materialize(doc, tree) {
     const el = doc.createElementNS("http://www.w3.org/2000/svg", tree.tag);
     for (const [k, v] of Object.entries(tree.attrs)) el.setAttribute(k, v);
