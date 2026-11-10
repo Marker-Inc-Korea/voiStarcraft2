@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import random
+import re
 import sys
 from pathlib import Path
 
@@ -212,7 +213,8 @@ def _row(cid, cat, sc: Scene, strokes, transcript, gold) -> dict:
     # the squad is only implied (the path starts on it, nothing says or circles which units): a product that ASKS "which
     # squad?" is also safe there; scored as kind_ok_lenient next to the strict kind accuracy
     roles = gold.get("roles", [])
-    gold["squad_implicit"] = bool(gold["squad"]) and not any(r.startswith("squad_circle") for r in roles) and cat != "transcript_squad"
+    gold["squad_implicit"] = bool(gold.get("squad")) and not any(r.startswith("squad_circle") for r in roles) and cat != "transcript_squad" \
+        and not re.search(r"\d+기|만 ", transcript)
     return {"id": cid, "category": cat, "seed": sc.seed, "world": sc.world.to_dict(), "info": sc.info,
             "request": _request(sc, cid, strokes, transcript), "gold": gold}
 
@@ -220,6 +222,19 @@ def _row(cid, cat, sc: Scene, strokes, transcript, gold) -> dict:
 def _squad_all(sc: Scene, k: int = 0, type_ko=None):
     c = sc.info["clusters"][k]
     return {"count": len(c["tags"]), "type_ko": type_ko, "tags": list(c["tags"])}
+
+
+def name_squad(sc: Scene, i: int, transcript: str, squad: dict) -> tuple[str, dict, bool]:
+    """3 of 4 rows: the user SAYS which squad ('마린 3기 ...'); the rest leave it implied (path starts on the army).  The backend
+    never invents a squad, so an implied squad is scored leniently (asking which squad is fine, executing is also gold)."""
+
+    if i % 4 == 0:
+        return transcript, squad, True
+    marines = [u[1] for u in sc.world.own_units if u[0] == "MARINE"]
+    n = min(len(marines), rint(sc.rng, 2, 5))
+    phrase = f"마린 {n}기"
+    text = f"{phrase} {transcript}".strip() if transcript else pick(sc.rng, [f"{phrase} 이 길로", f"{phrase} 보내", phrase])
+    return text, {"count": n, "type_ko": "마린", "tags": marines[:n]}, False
 
 
 PLACE_TRANSCRIPT = ["이쪽으로 이동", "이 길로 가", "여기로 이동해", "", "", "", "", "이리로 보내"]
@@ -247,8 +262,9 @@ def gen_move_path(i: int, seed: int) -> dict:
     strokes: list = []
     sc.add(strokes, [start] + wps + [b])
     transcript = pick(rng, PLACE_TRANSCRIPT)
+    transcript, squad, _implicit = name_squad(sc, i, transcript, _squad_all(sc))
     gold = {"kind": "execute", "waypoints": [_round(w) for w in wps], "final": {"action": "move", **dict(zip("xy", _round(b)))},
-            "squad": _squad_all(sc), "roles": ["path"], "note": "single path to a point" + (" with one bend" if bent else "")}
+            "squad": squad, "roles": ["path"], "note": "single path to a point" + (" with one bend" if bent else "")}
     return _row(cid, "move_path", sc, strokes, transcript, gold)
 
 
@@ -275,7 +291,8 @@ def gen_attack_circle(i: int, seed: int) -> dict:
         sc.add(strokes, [], frame_poly=ring, overshoot=False)
         roles = ["path", "circle"]
     transcript = pick(rng, ["", "", "", "저기 공격", "여기 쳐", "저 적들 공격해"])
-    gold = {"kind": "execute", "waypoints": [], "final": {"action": "attack", **dict(zip("xy", _round(ec)))}, "squad": _squad_all(sc),
+    transcript, squad, _implicit = name_squad(sc, i, transcript, _squad_all(sc))
+    gold = {"kind": "execute", "waypoints": [], "final": {"action": "attack", **dict(zip("xy", _round(ec)))}, "squad": squad,
             "roles": roles, "note": "path ends in a circle around enemy units => attack the circled enemies"}
     return _row(cid, "attack_circle", sc, strokes, transcript, gold)
 
@@ -301,8 +318,9 @@ def gen_two_segment_arrow(i: int, seed: int) -> dict:
     p2 = (bf[0] + barb * math.cos(back - spread), bf[1] + barb * math.sin(back - spread))
     sc.add(strokes, [], frame_poly=[p1, bf, p2], overshoot=False, speed_ms_per_unit=(900.0, 1600.0))
     transcript = pick(rng, ["", "", "", "여기 거쳐서 저기로", "이 길 따라 이동", "돌아서 가"])
+    transcript, squad, _implicit = name_squad(sc, i, transcript, _squad_all(sc))
     gold = {"kind": "execute", "waypoints": [_round(m)], "final": {"action": "move", **dict(zip("xy", _round(b)))},
-            "squad": _squad_all(sc), "roles": ["path", "arrow"], "note": "two-segment route, arrow head marks the final point"}
+            "squad": squad, "roles": ["path", "arrow"], "note": "two-segment route, arrow head marks the final point"}
     return _row(cid, "two_segment_arrow", sc, strokes, transcript, gold)
 
 
@@ -327,8 +345,9 @@ def gen_path_avoid(i: int, seed: int) -> dict:
     sc.add(strokes, [], frame_poly=[(xf[0] - h, xf[1] - h), (xf[0] + h, xf[1] + h)], overshoot=False, speed_ms_per_unit=(900.0, 1500.0))
     sc.add(strokes, [], frame_poly=[(xf[0] + h, xf[1] - h), (xf[0] - h, xf[1] + h)], overshoot=False, speed_ms_per_unit=(900.0, 1500.0))
     transcript = pick(rng, ["", "", "여기는 피해서", "X 표시한 데는 피하고 이동", "저기 피해서 가"])
+    transcript, squad, _implicit = name_squad(sc, i, transcript, _squad_all(sc))
     gold = {"kind": "execute", "waypoints": [_round(m)], "final": {"action": "move", **dict(zip("xy", _round(b)))},
-            "squad": _squad_all(sc), "avoid": [[*_round(mid), 9.0]], "roles": ["path", "avoid", "avoid"],
+            "squad": squad, "avoid": [[*_round(mid), 9.0]], "roles": ["path", "avoid", "avoid"],
             "note": "path detours around a drawn X; the X is an avoid mark, never a destination"}
     return _row(cid, "path_avoid", sc, strokes, transcript, gold)
 
