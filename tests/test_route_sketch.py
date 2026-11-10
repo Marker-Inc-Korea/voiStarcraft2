@@ -743,3 +743,66 @@ def test_an_unexpected_internal_error_becomes_an_ask_not_an_exception(monkeypatc
     monkeypatch.setattr(rs, "_build_decision", boom)
     decision = rs.interpret_sketch(_from_world(world, (31.0, 40.5), (110.0, 75.0), ""), world, vlm=None)
     assert decision.kind == "ask" and decision.route is None and decision.reason == "internal_error"
+
+
+# ---------------------------------------------------------------- reversed chains and round trips (real gemini answer shape)
+
+
+def _vlm_chain_reversed(reversed_index=1, order=(0, 1)):
+    return FakeVlm(
+        {
+            "strokes": [
+                {"index": 0, "role": "path"},
+                {"index": 1, "role": "path", "reversed": reversed_index == 1},
+            ],
+            "path_order": list(order),
+            "final_action": "move",
+            "squad": {"kind": "none"},
+            "confidence": 0.95,
+        }
+    )
+
+
+def test_two_paths_from_one_squad_chained_with_the_second_reversed_ask():
+    # rt-contra-005 shape: go to A, then come back along the other drawn path to where the squad started
+    world = _cluster_world()
+    strokes = _two_paths(world, b_end=(56.0, 102.0))
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_chain_reversed())
+    assert decision.kind == "ask" and decision.route is None and decision.question_ko == TWO_PATHS_QUESTION
+
+
+def test_a_reversed_flag_is_refused_when_the_chain_is_continuous_either_way():
+    world = _cluster_world()
+    p0, p1 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (80.0, 40.0)])
+    far = rs.world_to_frame(110.0, 75.0, world)
+    # second stroke starts AND ends at the end of the first (a loop out and back): orientation is ambiguous
+    loop = line(p1, far, 8) + line(far, p1, 8)[1:]
+    strokes = [line(p0, p1, 12), loop]
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_chain_reversed())
+    assert decision.kind == "ask" and decision.reason in {"reversed_stroke_ambiguous", "route_returns_to_start"}
+
+
+def test_a_reversed_flag_is_accepted_when_only_the_reversed_orientation_is_continuous():
+    world = _cluster_world()
+    p0, p1, p2 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (80.0, 40.0), (110.0, 75.0)])
+    strokes = [line(p0, p1, 12), line(p2, p1, 12)]  # second drawn from the far end back to p1
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=_vlm_chain_reversed())
+    assert decision.kind == "execute", decision
+    assert (decision.route.final.x, decision.route.final.y) == pytest.approx((110.0, 75.0), abs=1.0)
+
+
+def test_a_route_that_ends_where_the_squad_stands_asks():
+    world = _cluster_world()
+    a = rs.world_to_frame(31.0, 40.5, world)
+    out = rs.world_to_frame(100.0, 70.0, world)
+    strokes = [line(a, out, 12) + line(out, rs.world_to_frame(32.0, 41.0, world), 12)[1:]]
+    decision = rs.interpret_sketch(request(strokes, ""), world, vlm=None)
+    assert decision.kind == "ask" and decision.reason == "route_returns_to_start" and decision.route is None
+
+
+def test_genuine_two_segment_route_still_executes_with_a_small_gap():
+    world = _cluster_world()
+    p0, p1, p2 = (rs.world_to_frame(*p, world) for p in [(31.0, 40.5), (80.0, 40.0), (110.0, 75.0)])
+    q = rs.world_to_frame(86.0, 41.0, world)  # humanized: the second stroke starts ~6 wu past the first one's end
+    decision = rs.interpret_sketch(request([line(p0, p1, 12), line(q, p2, 12)], ""), world, vlm=_vlm_two_paths((0, 1)))
+    assert decision.kind == "execute", decision
