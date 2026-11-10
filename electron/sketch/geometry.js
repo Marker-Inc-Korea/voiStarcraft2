@@ -91,5 +91,23 @@
     return best;
   }
 
-  return { DEFAULT_SIDE_OF_HEIGHT, DEFAULT_MARGIN_OF_HEIGHT, MIN_SIDE, normalize, denormalize, contains, defaultMinimapRect, displayKey, emptyStore, parseStore, saveRect, clearRect, resolveRect, fitRect, capturePixels, outputSize, displayForRect };
+  // Window rect for the sketch/route surface: the minimap rect grown by `pad` DIP per side (room for labels/ghost cursor), clamped to the
+  // display. (ox, oy) = where the minimap frame's top-left sits inside that window. pad 0 = exactly the rect (sketch mode).
+  function windowFor(rect, bounds, pad = 0) {
+    const x0 = Math.max(bounds.x, rect.x - pad), y0 = Math.max(bounds.y, rect.y - pad);
+    const x1 = Math.min(bounds.x + bounds.width, rect.x + rect.w + pad), y1 = Math.min(bounds.y + bounds.height, rect.y + rect.h + pad);
+    return { bounds: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, ox: rect.x - x0, oy: rect.y - y0 };
+  }
+  const moveRect = (rect, dx, dy, bounds) => fitRect({ ...rect, x: rect.x + dx, y: rect.y + dy }, bounds);
+  // Drag one corner of the (square) minimap frame; the opposite corner stays put and the side follows the larger drag distance.
+  function resizeFromCorner(rect, corner, point, bounds) {
+    const left = corner === "tl" || corner === "bl", top = corner === "tl" || corner === "tr";
+    const ax = left ? rect.x + rect.w : rect.x, ay = top ? rect.y + rect.h : rect.y; // anchor = opposite corner
+    const roomX = left ? ax - bounds.x : bounds.x + bounds.width - ax, roomY = top ? ay - bounds.y : bounds.y + bounds.height - ay;
+    const wanted = Math.max(left ? ax - point.x : point.x - ax, top ? ay - point.y : point.y - ay);
+    const side = Math.round(clamp(wanted, MIN_SIDE, Math.max(MIN_SIDE, Math.min(roomX, roomY))));
+    return { x: left ? ax - side : ax, y: top ? ay - side : ay, w: side, h: side };
+  }
+
+  return { windowFor, moveRect, resizeFromCorner, DEFAULT_SIDE_OF_HEIGHT, DEFAULT_MARGIN_OF_HEIGHT, MIN_SIDE, normalize, denormalize, contains, defaultMinimapRect, displayKey, emptyStore, parseStore, saveRect, clearRect, resolveRect, fitRect, capturePixels, outputSize, displayForRect };
 });
