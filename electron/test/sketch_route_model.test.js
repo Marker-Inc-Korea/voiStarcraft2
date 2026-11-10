@@ -152,3 +152,48 @@ test("isActive: a plan that is neither done nor released nor faded counts as an 
   assert.equal(m.isActive(), false);
 });
 function STROKES() { return [[[0.1, 0.9, 0], [0.5, 0.5, 100], [0.9, 0.1, 200]]]; }
+
+test("execute answer keeps the strokes faded for a long linger while we wait for the route_plan event", () => {
+  const { m } = make();
+  m.setSketch("p1", STROKES()); m.settleSketch("execute");
+  assert.ok(m.view(M.NONE_LINGER_MS + 1).strokes);
+  assert.equal(m.view(M.EXECUTE_LINGER_MS + 1).strokes, null);
+  assert.ok(M.EXECUTE_LINGER_MS > M.ASK_LINGER_MS);
+});
+test("operation card: only backend-reported facts move the stages; the effect needs done:true", () => {
+  const { m } = make();
+  assert.equal(m.card(), null);
+  m.ingest(PLAN);
+  let c = m.card();
+  assert.equal(c.id, "route-p1"); assert.equal(c.tier, "operation"); assert.equal(c.name, "앞마당 (이동 중) → 맵 중앙 → 적 3번째 → 공격");
+  assert.deepEqual(c.stages, ["done", "done", "active", "todo", "todo"]); assert.equal(c.open, true);
+  m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "select", label_ko: "해병" });
+  assert.deepEqual(m.card().stages, ["done", "done", "done", "active", "todo"]);
+  m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "move", label_ko: "" });
+  assert.deepEqual(m.card().stages, ["done", "done", "done", "done", "active"]);
+  m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 1, done: false, released: false });
+  assert.equal(m.card().stages[4], "active", "a reached waypoint is not the effect of the whole route");
+  m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 1, done: true, released: false });
+  c = m.card(); assert.deepEqual(c.stages, ["done", "done", "done", "done", "done"]); assert.equal(c.open, false);
+});
+test("operation card in a simulated runtime shows 시뮬 stages, never a real order/effect", () => {
+  const { m } = make();
+  m.ingest(PLAN);
+  m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "move", label_ko: "" });
+  m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 1, done: true, released: false });
+  assert.deepEqual(m.card({ sim: true }).stages, ["done", "done", "sim", "sim", "sim"].map((s, i) => (i === 2 ? "done" : s)));
+  assert.equal(m.card({ sim: true }).sim, true);
+});
+test("operation card: released blocks the first open stage with the reason", () => {
+  const { m } = make();
+  m.ingest(PLAN);
+  m.ingest({ kind: "agent_cursor", plan_id: "p1", nx: 0.2, ny: 0.8, action: "select", label_ko: "" });
+  m.ingest({ kind: "route_progress", plan_id: "p1", reached_index: 0, done: false, released: true, reason: "emergency" });
+  const c = m.card();
+  assert.deepEqual(c.stages, ["done", "done", "done", "done", "blocked"]); assert.equal(c.blockedReason, "emergency"); assert.equal(c.open, false);
+});
+test("operation card name is capped at 80 characters", () => {
+  const { m } = make();
+  m.ingest({ ...PLAN, route: { waypoints: Array.from({ length: 6 }, (_, i) => ({ nx: 0.1 * i, ny: 0.5, label_ko: "아주 긴 지점 이름" + i })), final: PLAN.route.final } });
+  assert.ok(m.card().name.length <= 80);
+});
