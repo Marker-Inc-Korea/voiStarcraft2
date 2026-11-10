@@ -46,6 +46,8 @@ NOISE_LENGTH: Final[float] = 0.03
 INVENTED_POINT_TOLERANCE: Final[float] = 0.02
 """A VLM-supplied point further than this (frame units) from every stroke is invented."""
 AVOID_CLEARANCE: Final[float] = 0.02
+ARRIVAL_RADIUS: Final[float] = 5.0
+"""World units: a leading route point this close to the squad is where it already stands, not a waypoint."""
 RDP_EPSILON: Final[float] = 0.012
 VALID_ROLES: Final[frozenset[str]] = frozenset({"path", "target", "avoid", "squad_select", "noise"})
 VALID_ACTIONS: Final[frozenset[str]] = frozenset({"move", "attack"})
@@ -783,6 +785,11 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     near = world_points[0]
     units, label = _resolve_squad(req, world, sem, strokes, near)
     squad_centroid = (sum(u[2] for u in units) / len(units), sum(u[3] for u in units) / len(units))
+    # A stroke usually starts at the squad itself: leading points within the arrival radius of the squad are not
+    # waypoints (nothing to pass through there).  The final point is never dropped.
+    while len(world_points) > 1 and math.dist(world_points[0], squad_centroid) <= ARRIVAL_RADIUS:
+        world_points.pop(0)
+        snapped_frame.pop(0)
     # ---- avoid marks vs the planned path (including the leg from the squad to the first waypoint)
     walk = [world_to_frame(*squad_centroid, world), *snapped_frame]
     for index in sem.avoid_strokes:
