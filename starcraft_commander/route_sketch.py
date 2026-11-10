@@ -50,6 +50,13 @@ CLUSTER_LINK: Final[float] = 3.0
 """World units: own units closer than this (chained) form one cluster."""
 CLUSTER_START_RADIUS: Final[float] = 6.0
 """World units: the path's first point must be this close to exactly one own-unit cluster to name it the squad."""
+PLACE_MATCH_RADIUS: Final[float] = 25.0
+"""World units: a place the user NAMED must lie this close to where the route ends, else we ask."""
+IGNORED_STROKE_FRACTION: Final[float] = 0.35
+"""A stroke the VLM calls noise (or leaves unassigned) may be at most this fraction of the longest path stroke."""
+SECOND_PATH_END_DISTANCE: Final[float] = 15.0
+"""World units: two strokes leaving the squad whose ends are further apart are two different destinations."""
+TWO_PATHS_QUESTION: Final[str] = "경로가 두 개로 보여요. 어느 쪽으로 갈까요?"
 ARRIVAL_RADIUS: Final[float] = 5.0
 """World units: a leading route point this close to the squad is where it already stands, not a waypoint."""
 RDP_EPSILON: Final[float] = 0.012
@@ -162,6 +169,37 @@ class SketchWorld:
 class VlmReader(Protocol):
     def read(self, image_png: bytes | None, prompt: str, schema: dict) -> dict:  # pragma: no cover - protocol
         ...
+
+
+_OVERRIDE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:그림|스케치|선|획|지시|지침|규칙|명령|프롬프트|제한|안전)\s*(?:은|는|을|를|도)?\s*(?:모두\s*|전부\s*)?무시|"
+    r"(?:ignore|disregard|forget|override)\b.{0,40}\b(?:drawing|sketch|strokes?|instructions?|rules?|prompt|previous|above|everything)|"
+    r"\bDAN\b|\byou are now\b|</?\s*(?:system|assistant|developer|user|transcript)\b[^>]*>|"
+    r"^\s*(?:system|assistant|developer)\s*:|\[\s*(?:system|assistant)\s*\]|"
+    r"\bdo\s*not\s*ask\b|\bdon'?t\s*ask\b|\bwithout\s*asking\b|"
+    r"질문\s*(?:하지\s*말|없이|말고)|묻지\s*(?:말|마)|물어보지\s*(?:말|마)|안\s*물어봐도|"
+    r"\breveal\b.{0,40}\binstructions?\b|\bconfirm\s+execute\b|\bkind\s*(?:는|=|:)\s*execute|그대로\s*따라",
+    re.IGNORECASE,
+)
+
+
+def transcript_overrides_instructions(transcript: str) -> bool:
+    """True for instruction-override phrasing (ignore the drawing/rules, role tags, 'do not ask', reveal prompt...)."""
+
+    if not isinstance(transcript, str):
+        return False
+    return bool(_OVERRIDE_RE.search(transcript))
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text)
+
+
+def named_places(transcript: str, world: SketchWorld) -> list[tuple[str, float, float]]:
+    """Semantic places (``world.places``) whose full Korean name the user spoke (whitespace-insensitive)."""
+
+    spoken = _compact(transcript)
+    return [pl for pl in world.places if pl[0] and _compact(pl[0]) in spoken]
 
 
 @dataclass(frozen=True)
@@ -748,7 +786,7 @@ def _decision(req: SketchRequest, kind: str, narration: str, *, question: str | 
 def interpret_sketch(req: SketchRequest, world: SketchWorld, *, vlm: VlmReader | None = None) -> RouteDecision:
     """Strokes (+ transcript) -> :class:`RouteDecision`.  Pure: the only side channel is ``vlm.read``."""
 
-    if transcript_is_raw_control_or_injection(req.transcript):
+    if transcript_is_raw_control_or_injection(req.transcript) or transcript_overrides_instructions(req.transcript):
         return _decision(
             req, "refuse", "좌표나 지시 무시 같은 요청은 받지 않습니다. 미니맵에 경로를 그리고 부대만 말해 주세요.",
             reason="raw_control_or_injection",
@@ -822,6 +860,17 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     problem = _trace_problem(frame_path, final_frame, strokes, sem, world_points, world)
     if problem:
         raise _Unusable("refuse", problem)
+    # ---- a place the user NAMED must be where the route ends (else the speech and the drawing disagree: ask once)
+    spoken = named_places(req.transcript, world)
+    if spoken and not any(
+        math.hypot(final_check[0] - pl[1], final_check[1] - pl[2]) <= PLACE_MATCH_RADIUS for pl in spoken
+        for final_check in (world_points[-1],)
+    ):
+        names = ", ".join(pl[0] for pl in spoken)
+        raise _Unusable(
+            "ask", "named_place_not_at_route_end",
+            f"말씀하신 {names}와(과) 그린 경로의 끝이 달라요. 어디로 보낼까요?",
+        )
     # ---- squad
     near = world_points[0]
     start_frame = _xy(strokes[sem.path_strokes[0]])
@@ -834,6 +883,9 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
     while len(world_points) > 1 and math.dist(world_points[0], squad_centroid) <= ARRIVAL_RADIUS:
         world_points.pop(0)
         snapped_frame.pop(0)
+    # ---- the VLM may not silence a substantial stroke (noise / unassigned): deterministic guard
+    if _ignored_stroke_is_substantial(strokes, sem, world, units, world_points[-1]):
+        raise _Unusable("ask", "substantial_stroke_ignored", TWO_PATHS_QUESTION)
     # ---- avoid marks vs the planned path (including the leg from the squad to the first waypoint)
     walk = [world_to_frame(*squad_centroid, world), *snapped_frame]
     for index in sem.avoid_strokes:
@@ -858,6 +910,60 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
         kind="execute", plan_id=_plan_id(req, "execute"), narration_ko=narration, route=route, squad=squad,
         unit_tags=tuple(sorted(u[1] for u in units)),
     )
+
+
+def _ignored_stroke_is_substantial(
+    strokes: Sequence[Stroke],
+    sem: _Semantics,
+    world: SketchWorld,
+    units: Sequence[tuple[str, int, float, float]],
+    route_end: tuple[float, float],
+) -> bool:
+    """True when a stroke that is NOT part of the route (noise / unassigned) is too big to be a stray mark.
+
+    * its world length is >= :data:`IGNORED_STROKE_FRACTION` of the longest path stroke, unless it lies inside / on an
+      assigned target, avoid or squad_select stroke; or
+    * it is an open stroke that starts at the squad like the path does and ends > :data:`SECOND_PATH_END_DISTANCE`
+      world units from both its own start and the route end (a second destination).
+    """
+
+    side = _frame_scale(world)[0]
+    used = set(sem.path_strokes)
+    anchors = [i for i in (sem.target_stroke, sem.squad_stroke, *sem.avoid_strokes) if i is not None]
+    used.update(anchors)
+    path_len = max((_length(_xy(strokes[i])) * side for i in sem.path_strokes), default=0.0)
+
+    def at_squad(frame_pt: tuple[float, float]) -> bool:
+        wp = frame_to_world(frame_pt[0], frame_pt[1], world)
+        return wp is not None and any(math.hypot(u[2] - wp[0], u[3] - wp[1]) <= CLUSTER_START_RADIUS for u in units)
+
+    path_starts_at_squad = bool(sem.path_strokes) and at_squad(_xy(strokes[sem.path_strokes[0]])[0])
+    for index, stroke in enumerate(strokes):
+        if index in used or len(stroke) < 2:
+            continue
+        pts = _xy(stroke)
+        length = _length(pts) * side
+        if _length(pts) < NOISE_LENGTH:
+            continue
+        near_anchor = any(
+            (_is_closed(_xy(strokes[a])) and _inside(_centroid(pts), _xy(strokes[a])))
+            or sum(_min_distance_to_polyline(p, _xy(strokes[a])) <= 0.02 for p in pts) >= 0.8 * len(pts)
+            for a in anchors
+        )
+        if near_anchor:
+            continue
+        if path_len > 0.0 and length >= IGNORED_STROKE_FRACTION * path_len:
+            return True
+        if not _is_closed(pts) and path_starts_at_squad and at_squad(pts[0]):
+            end = frame_to_world(pts[-1][0], pts[-1][1], world)
+            start = frame_to_world(pts[0][0], pts[0][1], world)
+            if (
+                end is not None and start is not None
+                and math.dist(end, start) > SECOND_PATH_END_DISTANCE
+                and math.dist(end, route_end) > SECOND_PATH_END_DISTANCE
+            ):
+                return True
+    return False
 
 
 def _eul_reul(word: str) -> str:
