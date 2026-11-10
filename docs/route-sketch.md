@@ -56,7 +56,9 @@ published on the SSE journal `/api/events` with `event_type` = kind. Every event
    (total <= 8), snap to the nearest pathable point (ring search, radius 8), Korean labels (nearest semantic place within
    12 % of the map -> "<place> 근처", centre -> "맵 중앙", else "맵 중앙 기준 N시 방향").
 5. Validator: target inside/at the drawn target circle, squad resolves to existing own units (named type exists, count
-   satisfiable, not leased elsewhere; or the units inside the squad_select circle), avoid marks not crossed by
+   satisfiable, not leased elsewhere; or the units inside the squad_select circle; or, when nothing is named or circled,
+   the single own-unit cluster (single linkage 3 units) within 6 world units of the path's first point - two clusters
+   or none keep asking), avoid marks not crossed by
    squad->waypoints leg or the path, every waypoint traces to a stroke point.
 
 ## Execution (`route_execution.py`)

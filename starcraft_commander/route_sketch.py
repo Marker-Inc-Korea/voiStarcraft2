@@ -46,6 +46,10 @@ NOISE_LENGTH: Final[float] = 0.03
 INVENTED_POINT_TOLERANCE: Final[float] = 0.02
 """A VLM-supplied point further than this (frame units) from every stroke is invented."""
 AVOID_CLEARANCE: Final[float] = 0.02
+CLUSTER_LINK: Final[float] = 3.0
+"""World units: own units closer than this (chained) form one cluster."""
+CLUSTER_START_RADIUS: Final[float] = 6.0
+"""World units: the path's first point must be this close to exactly one own-unit cluster to name it the squad."""
 ARRIVAL_RADIUS: Final[float] = 5.0
 """World units: a leading route point this close to the squad is where it already stands, not a waypoint."""
 RDP_EPSILON: Final[float] = 0.012
@@ -491,6 +495,43 @@ def _resolve_squad_from_transcript(
     return list(pool), f"{name} {_plural_ko(count if count is not None else len(pool))}"
 
 
+def _own_clusters(units: Sequence[tuple[str, int, float, float]]) -> list[list[tuple[str, int, float, float]]]:
+    """Single-linkage clusters of own units (link distance :data:`CLUSTER_LINK`)."""
+
+    remaining = list(units)
+    clusters: list[list[tuple[str, int, float, float]]] = []
+    while remaining:
+        cluster = [remaining.pop()]
+        grew = True
+        while grew:
+            grew = False
+            for unit in remaining[:]:
+                if any(math.hypot(unit[2] - c[2], unit[3] - c[3]) <= CLUSTER_LINK for c in cluster):
+                    cluster.append(unit)
+                    remaining.remove(unit)
+                    grew = True
+        clusters.append(cluster)
+    return clusters
+
+
+def _squad_label(units: Sequence[tuple[str, int, float, float]]) -> str:
+    counts: dict[str, int] = {}
+    for unit in units:
+        name = _ko_name(unit[0])
+        counts[name] = counts.get(name, 0) + 1
+    return "·".join(f"{name} {_plural_ko(n)}" for name, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _cluster_at_start(world: SketchWorld, start: tuple[float, float]) -> list[tuple[str, int, float, float]] | None:
+    """The single own-unit cluster within :data:`CLUSTER_START_RADIUS` of ``start``; ``None`` if none or several."""
+
+    near = [
+        cluster for cluster in _own_clusters(list(world.own_units))
+        if min(math.hypot(u[2] - start[0], u[3] - start[1]) for u in cluster) <= CLUSTER_START_RADIUS
+    ]
+    return near[0] if len(near) == 1 else None
+
+
 def _pick_units(
     units: Sequence[tuple[str, int, float, float]], count: int | None, near: tuple[float, float]
 ) -> list[tuple[str, int, float, float]]:
@@ -783,7 +824,10 @@ def _build_decision(req: SketchRequest, world: SketchWorld, sem: _Semantics) -> 
         raise _Unusable("refuse", problem)
     # ---- squad
     near = world_points[0]
-    units, label = _resolve_squad(req, world, sem, strokes, near)
+    start_frame = _xy(strokes[sem.path_strokes[0]])
+    start_frame = (start_frame[-1] if sem.path_strokes[0] in sem.reversed_strokes else start_frame[0]) if sem.path_strokes else None
+    start_world = frame_to_world(start_frame[0], start_frame[1], world) if start_frame is not None else None
+    units, label = _resolve_squad(req, world, sem, strokes, near, start_world)
     squad_centroid = (sum(u[2] for u in units) / len(units), sum(u[3] for u in units) / len(units))
     # A stroke usually starts at the squad itself: leading points within the arrival radius of the squad are not
     # waypoints (nothing to pass through there).  The final point is never dropped.
@@ -840,7 +884,7 @@ def _trace_problem(frame_path, final_frame, strokes, sem, world_points, world) -
     return ""
 
 
-def _resolve_squad(req, world, sem, strokes, near):
+def _resolve_squad(req, world, sem, strokes, near, start_world=None):
     if sem.squad_kind == "circled_by_stroke" and sem.squad_stroke is not None:
         polygon = _xy(strokes[sem.squad_stroke])
         picked = [u for u in world.own_units if _inside(world_to_frame(u[2], u[3], world), polygon)]
@@ -850,6 +894,12 @@ def _resolve_squad(req, world, sem, strokes, near):
         label = f"{names.pop()} {len(picked)}기" if len(names) == 1 else f"선택한 부대 {len(picked)}기"
         return picked, label
     parsed = parse_squad_from_transcript(req.transcript)
+    if parsed is None and start_world is not None:
+        # Nothing named and nothing circled: users draw from the units they mean.  Exactly one own-unit cluster at the
+        # path's first point is the squad; two or more (or none) keep asking.
+        cluster = _cluster_at_start(world, start_world)
+        if cluster is not None:
+            return cluster, _squad_label(cluster)
     pool, label_or_question = _resolve_squad_from_transcript(req.transcript, world)
     if pool is None:
         raise _Unusable("ask", "squad_unresolved", label_or_question)
