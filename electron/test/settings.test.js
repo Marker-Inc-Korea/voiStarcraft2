@@ -71,7 +71,7 @@ test("stored settings are sanitised field by field; corrupt files never break th
   assert.deepEqual(S.sanitizeStored(null), d);
   assert.deepEqual(S.sanitizeStored("junk"), d);
   const s = S.sanitizeStored({ glass: { alpha: 0.6, blur: 999, hue: "red" }, layout: { dock: "left", zone: 0 }, voice: { shortcut: "bad" }, evil: { x: 1 } });
-  assert.equal(s.glass.alpha, 0.6); assert.equal(s.glass.blur, 12); assert.equal(s.glass.hue, 250);
+  assert.equal(s.glass.alpha, 0.6); assert.equal(s.glass.blur, 12); assert.equal(s.glass.hue, d.glass.hue);
   assert.equal(s.layout.dock, "left"); assert.equal(s.layout.zone, 2); assert.equal(s.voice.shortcut, "CommandOrControl+Shift+Space");
   assert.equal(s.evil, undefined);
   assert.equal(S.sanitizeStored({ server: { url: "https://evil.example" } }).server.url, "http://127.0.0.1:8765");
@@ -123,13 +123,13 @@ test("rainbow.screen: current | all, default current, strict enum", () => {
   for (const lang of ["ko", "en"]) for (const key of ["rainbow_screen", "screen_current", "screen_all"]) assert.ok(require("../renderer/i18n.js").tables[lang][key], `${lang} ${key}`);
 });
 
-test("glass.twinkle and glass.meteors: booleans, default on, strict, sanitised", () => {
+test("glass.twinkle and glass.meteors: booleans, default off, strict, sanitised", () => {
   const d = S.defaults();
-  assert.equal(d.glass.twinkle, true); assert.equal(d.glass.meteors, true);
+  assert.equal(d.glass.twinkle, false); assert.equal(d.glass.meteors, false);
   assert.deepEqual(S.validatePatch({ glass: { twinkle: false, meteors: false } }), { glass: { twinkle: false, meteors: false } });
   for (const bad of [1, "on", null]) { assert.throws(() => S.validatePatch({ glass: { twinkle: bad } }), /glass\.twinkle must be a boolean/); assert.throws(() => S.validatePatch({ glass: { meteors: bad } }), /glass\.meteors must be a boolean/); }
-  assert.equal(S.sanitizeStored({ glass: { twinkle: "yes", meteors: false } }).glass.twinkle, true);
-  assert.equal(S.sanitizeStored({ glass: { meteors: false } }).glass.meteors, false);
+  assert.equal(S.sanitizeStored({ glass: { twinkle: "yes", meteors: true } }).glass.twinkle, false);
+  assert.equal(S.sanitizeStored({ glass: { meteors: true } }).glass.meteors, true);
   for (const lang of ["ko", "en"]) for (const key of ["glass_twinkle", "glass_meteors"]) assert.ok(require("../renderer/i18n.js").tables[lang][key], `${lang} ${key}`);
   assert.equal(require("../renderer/i18n.js").tables.ko.glass_twinkle, "반짝임"); assert.equal(require("../renderer/i18n.js").tables.ko.glass_meteors, "유성");
 });
@@ -138,4 +138,13 @@ test("the 유리 tab keeps 별 밀도 / 별 속도 / 성운 and adds 반짝임 /
   for (const key of ["stars", "starSpeed", "nebula", "twinkle", "meteors"]) assert.ok(keys.includes(key), key);
   assert.ok(keys.indexOf("nebula") < keys.indexOf("twinkle") && keys.indexOf("twinkle") < keys.indexOf("meteors"));
   const i18n = require("../renderer/i18n.js").tables.ko; assert.equal(i18n.glass_stars, "별"); assert.equal(i18n.glass_starSpeed, "별 속도"); assert.equal(i18n.glass_nebula, "성운");
+});
+
+test("quiet glass defaults: graphite tint, no decoration, no border bloom; every control keeps its key and range", () => {
+  const g = S.defaults().glass;
+  assert.ok(g.saturation >= 6 && g.saturation <= 8, "graphite glass");
+  assert.equal(g.stars, 0); assert.equal(g.nebula, 0); assert.equal(g.borderGlow, 0);
+  assert.equal(g.twinkle, false); assert.equal(g.meteors, false);
+  assert.deepEqual([S.SCHEMA.glass.stars.min, S.SCHEMA.glass.stars.max, S.SCHEMA.glass.nebula.max, S.SCHEMA.glass.saturation.max, S.SCHEMA.glass.borderGlow.max], [0, 100, 100, 100, 100]);
+  assert.equal(S.validatePatch({ glass: { stars: 100, nebula: 100, borderGlow: 100, saturation: 100 } }).glass.saturation, 100);
 });

@@ -7,7 +7,7 @@ test("starCount scales with area and the 별 slider, is capped, and 0 area / 0 d
   assert.ok(Sky.starCount(980, 120, 0.5) > Sky.starCount(980, 120, 0.1));
   assert.ok(Sky.starCount(980, 640, 1) > Sky.starCount(980, 120, 1));
   assert.equal(Sky.starCount(5000, 5000, 1), Sky.MAX_STARS);
-  assert.ok(Sky.starCount(980, 640, 0) > 0, "slider at 0 still lays out a sparse base set (intensity 0 hides them)");
+  assert.equal(Sky.starCount(980, 640, 0), 0, "slider at 0 lays out no stars at all");
   assert.equal(Sky.starCount(980, 640, 9), Sky.starCount(980, 640, 1)); // out-of-range density is clamped
 });
 test("layout: deterministic per seed, three depths in the intended proportions, values in range", () => {
@@ -70,7 +70,7 @@ test("intensity: stars and nebula follow their OWN sliders; low glass opacity do
   assert.ok(lowGlass.star === highGlass.star, "stars ignore glass opacity entirely");
   assert.ok(lowGlass.nebula >= highGlass.nebula, "nebula never gets dimmer on thinner glass");
   assert.ok(lowGlass.nebula > 0.3 && lowGlass.star > 0.6, "still clearly visible at the lowest glass alpha");
-  assert.equal(Sky.intensity({ stars: 0, nebula: 0 }).star, 0); assert.equal(Sky.intensity({ stars: 0, nebula: 0 }).nebula, 0); assert.equal(Sky.intensity({ stars: 0, nebula: 0 }).aurora, 0);
+  assert.equal(Sky.intensity({ stars: 0, nebula: 0 }).star, 0); assert.equal(Sky.intensity({ stars: 0, nebula: 0 }).nebula, 0);
   assert.ok(Sky.intensity({ stars: 1 }).star > Sky.intensity({ stars: 0.2 }).star);
   assert.ok(Sky.intensity({ nebula: 5 }).nebula <= 1.15 + 1e-9); // clamped
 });
@@ -87,4 +87,11 @@ test("space.js wiring: one rAF loop, capped, gated on visibility and reduced mot
   assert.match(src, /still\(\)\) \{ draw\(performance\.now\(\)\); return; \}/);
   assert.match(src, /LOOP_SECONDS = 75/); assert.match(src, /plus|lighter/);
   assert.doesNotMatch(src, /Math\.random/, "no unseeded randomness in the render path");
+});
+
+test("hasContent: the canvas has something to draw only when stars or nebula is above 0 (default: nothing, so no frame loop)", () => {
+  assert.equal(Sky.hasContent({ stars: 0, nebula: 0 }), false); assert.equal(Sky.hasContent(), false);
+  assert.equal(Sky.hasContent({ stars: 0.01, nebula: 0 }), true); assert.equal(Sky.hasContent({ stars: 0, nebula: 0.2 }), true);
+  const space = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "renderer", "space.js"), "utf8");
+  assert.match(space, /Sky\.hasContent\(cfg\)/); assert.match(space, /const visible = \(\) => drawable\(\)/);
 });
