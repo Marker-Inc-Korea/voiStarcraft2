@@ -1,5 +1,6 @@
 "use strict";
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, session: electronSession } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, desktopCapturer, systemPreferences, session: electronSession } = require("electron");
+const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
@@ -14,12 +15,15 @@ const Skins = require("./renderer/skins.js");
 const { createShortcutRegistry, createEmergencyShortcuts } = require("./shortcuts.js");
 // BOARD
 const Board = require("./board.js");
+// SKETCH: minimap route sketch (hold Control+Option), route display, agent ghost cursor
+const Sketch = require("./sketch/controller.js");
 
 const ENV_URL = P.validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
 let baseUrl = ENV_URL;
 const rendererFile = path.join(__dirname, "renderer", "index.html");
 const overlayFile = path.join(__dirname, "overlay", "index.html");
 const RENDERER_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+const SKETCH_CSP = Sketch.SKETCH_CSP;
 const OVERLAY_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'";
 const CHANNELS = Object.freeze({
   status: "commander:status", runtimeStatus: "commander:runtime-status", command: "commander:command", capabilities: "commander:capabilities",
@@ -27,6 +31,7 @@ const CHANNELS = Object.freeze({
   voiceStart: "voice:start", voiceStop: "voice:stop", voiceState: "voice:state", voiceAudio: "voice:audio", voiceMicError: "voice:mic-error", voiceLevel: "voice:level", voicePtt: "voice:ptt",
   settingsGet: "settings:get", settingsSet: "settings:set", settingsReset: "settings:reset", settingsOpen: "settings:open", serverProbe: "server:probe", shortcutCheck: "shortcut:check", rainbowPreview: "rainbow:preview",
   dockState: "dock:state", dockFocus: "dock:focus", dockRect: "dock:rect", dockAttention: "dock:attention", emergency: "commander:emergency",
+  sketchAction: "sketch:action", sketchStrokes: "sketch:strokes", sketchCancel: "sketch:cancel", sketchCalibration: "sketch:calibration",
   push: "commander:push", overlayState: "overlay:state", overlayLevel: "overlay:level", overlaySettings: "overlay:settings",
 });
 const POLL_MS = 50;
@@ -66,6 +71,9 @@ let shortcutStatus = { toggle: true, settings: true, emergency: { retreat: true,
 let pttToggled = false;
 // BOARD
 let board = null;
+// SKETCH
+let sketch = null;
+let helperPrompt = false; // the next helper launch (after the user clicked 다시 시도) asks macOS to show the Input Monitoring prompt
 
 async function requestJson(pathname, options = {}) {
   const response = await fetch(new URL(pathname, baseUrl), {
@@ -106,7 +114,7 @@ function displayChoices() {
   return screen.getAllDisplays().map((display, index) => ({ id: display.id, label: `${index + 1}`, primary: display.id === screen.getPrimaryDisplay().id }));
 }
 function settingsSnapshot() {
-  return { settings, status: { shortcut: shortcutStatus, displays: displayChoices(), model: lastSession.model, tierHint: lastSession.tierHint, platform: process.platform, vibrancySupported: process.platform === "darwin", baseUrl } };
+  return { settings, status: { sketch: sketch ? sketch.statusSnapshot() : null, shortcut: shortcutStatus, displays: displayChoices(), model: lastSession.model, tierHint: lastSession.tierHint, platform: process.platform, vibrancySupported: process.platform === "darwin", baseUrl } };
 }
 function broadcastSettings() {
   pushToRenderer({ type: "settings", ...settingsSnapshot() });
@@ -140,6 +148,7 @@ function applySettings(patch) {
   if (changed("rainbow") && "screen" in patch.rainbow) syncOverlays();
   if (changed("rainbow") || changed("glass")) { updateOverlay(); sendOverlaySettings(); }
   // BOARD: re-pace / re-place the tactical board (also picks up skin + language from glass/voice)
+  if (sketch && (changed("sketch") || changed("glass"))) sketch.configure(); // SKETCH
   if (board && (changed("board") || changed("layout") || changed("glass") || changed("voice"))) board.configure();
   saveSettingsSoon();
   broadcastSettings();
@@ -279,7 +288,7 @@ function createVoice() {
       updateOverlay();
       pushToRenderer({ type: "voice-state", ...snapshot });
     },
-    onTranscript: transcript => pushToRenderer({ type: "transcript", ...transcript }),
+    onTranscript: transcript => { if (sketch && transcript.text) sketch.noteTranscript(transcript.turn, transcript.text); pushToRenderer({ type: "transcript", ...transcript }); },
     onIntent: intent => pushToRenderer({ type: "intent", ...intent }),
     onSession: info => { lastSession = info; pushToRenderer({ type: "session", ...info }); },
     onLog: message => { if (process.env.VOI_DEBUG) console.log(`[voice] ${message}`); },
@@ -474,6 +483,22 @@ function registerIpc() {
   // BOARD: HUD renderer publishes its derived card view-model; main validates and forwards it to the board window.
   listen(Board.CHANNELS.publish, input => { if (board) board.setCards(P.validateBoardCards(input)); });
   ipcMain.on(Board.CHANNELS.page, (event, input) => { if (board && board.ownsWebContents(event.sender) && input && (input.delta === 1 || input.delta === -1)) board.page(input.delta); });
+  // SKETCH: the HUD asks for calibration / helper retry / capture permission; the sketch window reports strokes, cancels and calibration.
+  handle(CHANNELS.sketchAction, async input => {
+    const { action } = P.validateSketchAction(input);
+    if (action === "calibrate") sketch.startCalibration();
+    else if (action === "reset-calibration") sketch.resetCalibration();
+    else if (action === "retry-helper") { helperPrompt = true; sketch.retryHelper(); }
+    else if (action === "request-capture") { try { await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 1, height: 1 } }); } catch { /* the OS prompt/denial is reflected in the status below */ } }
+    return sketch.statusSnapshot();
+  });
+  const fromSketch = (channel, callback) => ipcMain.on(channel, (event, input) => {
+    if (!sketch || !sketch.ownsWebContents(event.sender)) return;
+    try { callback(input); } catch (error) { if (process.env.VOI_DEBUG) console.log(`[ipc ${channel}] ${error.message}`); }
+  });
+  fromSketch(CHANNELS.sketchStrokes, input => sketch.handleStrokes(P.validateSketchStrokes(input)));
+  fromSketch(CHANNELS.sketchCancel, input => sketch.handleCancel(P.validateSketchCancel(input).reason));
+  fromSketch(CHANNELS.sketchCalibration, input => sketch.handleCalibration(P.validateSketchCalibration(input)));
   listen(CHANNELS.voiceMicError, input => { voice.micFailed(P.validateMicError(input).reason); });
 }
 
@@ -487,8 +512,10 @@ function installPermissions(ses) {
   ses.setDevicePermissionHandler(() => false);
   ses.webRequest.onHeadersReceived((details, callback) => {
     const isOverlay = liveOverlays().some(win => win.webContents.id === details.webContentsId);
+    const sketchWin = sketch && sketch.getWindow();
+    const isSketch = Boolean(sketchWin && sketchWin.webContents.id === details.webContentsId);
     const isBoard = Boolean(board && board.getWindow() && !board.getWindow().isDestroyed() && board.getWindow().webContents.id === details.webContentsId); // BOARD
-    callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [isOverlay ? OVERLAY_CSP : isBoard ? Board.BOARD_CSP : RENDERER_CSP] } });
+    callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [isOverlay ? OVERLAY_CSP : isBoard ? Board.BOARD_CSP : isSketch ? SKETCH_CSP : RENDERER_CSP] } });
   });
 }
 
@@ -526,11 +553,28 @@ function createBoardController() {
   board.start();
 }
 
+// SKETCH: owns the chord helper, the sketch/route window and the route event feed (electron/sketch/controller.js).
+function createSketchController() {
+  sketch = Sketch.createSketchController({
+    BrowserWindow, getDisplays: displayList, getCursor: currentCursor, getSettings: () => settings, requestJson,
+    pushHud: payload => pushToRenderer(payload), registerGlobal, unregisterGlobal,
+    captureDeps: () => ({ getAccess: () => systemPreferences.getMediaAccessStatus("screen"), getSources: options => desktopCapturer.getSources(options) }),
+    spawn: (command, args) => { const withPrompt = helperPrompt; helperPrompt = false; return spawn(command, withPrompt ? [...args, "--prompt"] : args, { stdio: ["pipe", "pipe", "ignore"] }); },
+    helperPath: path.join(__dirname, "native", "bin", "chord_helper"), existsSync: file => process.platform === "darwin" && !process.env.VOI_SKETCH_NO_HELPER && fs.existsSync(file),
+    storeFile: path.join(app.getPath("userData"), "minimap.json"), fs,
+    windowFile: path.join(__dirname, "sketch", "window", "index.html"), preloadFile: path.join(__dirname, "sketch", "window", "preload.js"),
+    onAttention: () => { attentionUntil = Date.now() + ATTENTION_PULSE_MS; }, onStatus: () => broadcastSettings(),
+    onDebug: message => { if (process.env.VOI_DEBUG) console.log(message); },
+  });
+  sketch.start();
+}
+
 function onDisplaysChanged(event) {
   trace({ ev: "display-event", cursor: currentCursor() });
   follower.reset();
   dockDisplayId = resolveDockDisplay();
   placeDock(dockDisplayId, "displays-changed");
+  if (sketch) sketch.onDisplaysChanged(); // SKETCH
   broadcastSettings();
 }
 
@@ -543,6 +587,7 @@ app.whenReady().then(() => {
   registerIpc();
   createDockWindow();
   createBoardController(); // BOARD
+  createSketchController(); // SKETCH
   syncOverlays();
   for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(eventName, onDisplaysChanged);
   registerToggleShortcut();
@@ -553,7 +598,7 @@ app.whenReady().then(() => {
   app.on("activate", () => { startPolling(); });
 });
 app.on("window-all-closed", () => app.quit());
-app.on("will-quit", () => { if (board) board.stop(); saveSettingsNow(); globalShortcut.unregisterAll(); stopPolling(); });
+app.on("will-quit", () => { if (board) board.stop(); if (sketch) sketch.stop(); saveSettingsNow(); globalShortcut.unregisterAll(); stopPolling(); });
 app.on("before-quit", () => { if (voice) voice.stop(); });
 
 module.exports = {
@@ -563,7 +608,7 @@ module.exports = {
     getTrace: () => dockTrace.slice(), getMain: () => mainWindow, getOverlay: () => liveOverlays()[0] || null, getOverlays: () => liveOverlays(), getDockDisplayId: () => dockDisplayId, getVoice: () => voice, getOverlayState: () => overlayState,
     setFakeCursor: point => { fakeCursor = point; },
     tick, toggleShortcut, nudgeGlass, getBoard: () => board, applySettings, setSettingsOpen, previewRainbow,
-    getSettings: () => settings, panelPolygon, pointerOverPanel,
+    getSettings: () => settings, panelPolygon, pointerOverPanel, getSketch: () => sketch,
     dockInfo: () => ({ revealed, ignoring, focusable: windowFocusable, focused: Boolean(mainWindow && mainWindow.isFocused()), dock: settings.layout.dock, glass: settings.glass, reason: lastReason, bounds: mainWindow && mainWindow.getBounds(), panelRect, layout: currentLayout, shortcutOpen, settingsOpen, baseUrl }),
     setOverlay,
   },

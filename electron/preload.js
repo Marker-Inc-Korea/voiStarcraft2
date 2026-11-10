@@ -18,6 +18,8 @@ const voice = Object.freeze({
   ptt: down => ipcRenderer.send("voice:ptt", { down: Boolean(down) }),
   micError: reason => ipcRenderer.send("voice:mic-error", { reason: String(reason || "mic error").slice(0, 160) }),
 });
+// Minimap sketch: bare, validated actions only (calibrate / reset position / retry the key helper / ask for screen-recording access).
+const sketch = Object.freeze({ action: action => ipcRenderer.invoke("sketch:action", { action }) });
 const settings = Object.freeze({
   get: () => ipcRenderer.invoke("settings:get"),
   set: patch => ipcRenderer.invoke("settings:set", patch),
@@ -46,6 +48,7 @@ contextBridge.exposeInMainWorld("commander", Object.freeze({
     attention: reason => ipcRenderer.send("dock:attention", { reason }),
   }),
   settings,
+  sketch,
   // Main-process pushes: {type:"voice-state"|"transcript"|"intent"|"dock-state"|"settings"|"session", ...}
   onEvent: callback => subscribe("commander:push", callback),
   voice,

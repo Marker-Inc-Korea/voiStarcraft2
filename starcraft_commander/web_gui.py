@@ -57,6 +57,7 @@ from weakref import WeakValueDictionary
 
 from starcraft_commander.companion_ui import render_companion_page
 from starcraft_commander import realtime_intent
+from starcraft_commander import route_sketch
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
     MicroMachineBridgeFailureMode,
@@ -4653,6 +4654,9 @@ WEB_GUI_SSE_REFRESH_SECONDS: Final[float] = 0.25
 MAX_COMMAND_BODY_BYTES: Final[int] = 64 * 1024
 """Upper bound for one ``POST /api/command`` body; larger bodies are rejected."""
 
+MAX_ROUTE_SKETCH_BODY_BYTES: Final[int] = 2_400_000
+"""Upper bound for one ``POST /api/route/sketch`` body (<=512 px PNG crop as base64 plus <=2000 stroke points)."""
+
 MAX_WEB_REQUEST_ID_CHARS: Final[int] = 128
 """Upper bound for browser-generated command correlation identities."""
 
@@ -8984,6 +8988,31 @@ class SessionLoopBridge:
         self._ready = threading.Event()
 
     @property
+    def route_service(self):
+        """Minimap route sketch service bound to this session's executor and loop (built on first use)."""
+
+        with self._lifecycle_lock:
+            service = getattr(self, "_route_service", None)
+            if service is None:
+                from starcraft_commander import route_service as route_service_module
+                from starcraft_commander import route_vlm
+
+                def run_on_bridge_loop(coroutine):
+                    loop = self._loop
+                    if loop is None or not loop.is_running():
+                        coroutine.close()
+                        raise RuntimeError("session loop is not running")
+                    return asyncio.run_coroutine_threadsafe(coroutine, loop).result(timeout=15.0)
+
+                service = route_service_module.RouteService(
+                    executor=getattr(self._session, "executor", None),
+                    vlm=route_vlm.reader_from_env(),
+                    runner=run_on_bridge_loop,
+                )
+                self._route_service = service
+            return service
+
+    @property
     def is_running(self) -> bool:
         """Return whether the worker loop thread is alive and accepting work."""
 
@@ -11417,6 +11446,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/history":
             self._handle_history()
             return
+        if path == "/api/route/events":
+            self._handle_route_events()
+            return
         if path == "/api/events":
             self._handle_events()
             return
@@ -11473,6 +11505,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/emergency":
             self._handle_emergency()
             return
+        if path == "/api/route/sketch":
+            self._handle_route_sketch()
+            return
         # Drain any request body so a keep-alive connection stays usable.
         self._read_request_body()
         self._send_not_found()
@@ -11519,7 +11554,71 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             seq_value = event.get("seq")
             if isinstance(seq_value, int) and seq_value > latest:
                 latest = seq_value
+        payload: dict[str, object] = {"events": events, "latest": latest}
+        route_after = params.get("route_after", [""])[0]
+        if route_after != "":
+            # Additive: route sketch events (route_plan / route_progress / agent_cursor) with their own cursor.
+            try:
+                route_cursor = max(0, int(route_after))
+            except ValueError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "route_after 파라미터는 정수여야 합니다."})
+                return
+            service = self._route_service()
+            route_events, route_latest = service.events.since(route_cursor) if service else ([], route_cursor)
+            payload["route_events"] = route_events
+            payload["route_latest"] = route_latest
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _route_service(self):
+        """The bridge's :class:`route_service.RouteService` (events published on the SSE journal), or ``None``."""
+
+        service = getattr(self._bridge, "route_service", None)
+        if service is None:
+            return None
+        if getattr(service, "_sse_bound", None) is not self.server:
+            service.set_publisher(lambda kind, payload: self.server.publish_event(kind, payload))  # type: ignore[attr-defined]
+            service._sse_bound = self.server
+        return service
+
+    def _handle_route_events(self) -> None:
+        params = parse_qs(urlsplit(self.path).query)
+        try:
+            after = max(0, int((params.get("after", ["0"])[0] or "0")))
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "after 파라미터는 정수여야 합니다."})
+            return
+        service = self._route_service()
+        events, latest = service.events.since(after) if service else ([], after)
         self._send_json(HTTPStatus.OK, {"events": events, "latest": latest})
+
+    def _handle_route_sketch(self) -> None:
+        """Minimap route sketch -> validated route; see ``starcraft_commander/route_sketch.py`` and docs/route-sketch.md."""
+
+        body = self._read_request_body(max_bytes=MAX_ROUTE_SKETCH_BODY_BYTES)
+        service = self._route_service()
+        if service is None:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "경로 스케치 기능이 이 서버에 연결되어 있지 않습니다."},
+            )
+            return
+        if body is None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "경로 스케치 본문을 읽을 수 없거나 너무 큽니다."})
+            return
+        try:
+            document = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "경로 스케치 본문이 올바른 JSON이 아닙니다."})
+            return
+        try:
+            result = service.handle(document)
+        except route_sketch.SketchRequestError as error:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+            return
+        except Exception as error:  # noqa: BLE001 - surfaced honestly as 500; nothing was ordered on a raise before start.
+            self._send_internal_error(error)
+            return
+        self._send_json(HTTPStatus.ACCEPTED, result)
 
     def _handle_events(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
@@ -13799,7 +13898,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             payload,
         )
 
-    def _read_request_body(self) -> bytes | None:
+    def _read_request_body(self, max_bytes: int | None = None) -> bytes | None:
         """Read the request body; ``None`` marks malformed/oversized input."""
 
         raw_length = self.headers.get("Content-Length")
@@ -13810,7 +13909,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.close_connection = True
             return None
-        if length < 0 or length > MAX_COMMAND_BODY_BYTES:
+        if length < 0 or length > (MAX_COMMAND_BODY_BYTES if max_bytes is None else max_bytes):
             self.close_connection = True
             return None
         if length == 0:
@@ -13840,7 +13939,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "POST /api/micromachine/modulate, "
                     "POST /api/micromachine/contextual-transfer, "
                     "POST /api/realtime/session, POST /api/realtime/intent, "
-                    "POST /api/emergency."
+                    "POST /api/emergency, POST /api/route/sketch, GET /api/route/events."
                 )
             },
         )

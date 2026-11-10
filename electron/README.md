@@ -47,6 +47,41 @@ effect only, never angular corners). Both skins share opacity/blur/hue settings,
 terminal text scrim/glow are computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
 live (no reload) and persisted (`glass.skin`).
 
+## Minimap route sketch (hold Control+Option, draw on the SC2 minimap)
+
+While **Control+Option (⌃⌥, nothing else)** is held, a transparent non-activating panel appears exactly over the calibrated SC2 minimap and takes
+the user's own mouse; everywhere else stays click-through and the game keeps keyboard focus. Releasing the chord ends the sketch. Esc, a click without
+a drag, another key, the helper dying, or disabling the feature **cancels** (nothing is sent, the HUD line says so). On release with >= 1 stroke:
+payload (`update_id`, `strokes` [[nx,ny,t_ms]] normalized to the minimap FRAME, `image_png_b64` crop <= 512 px or `null`, `transcript` of the last 10 s,
+`minimap_rect`) -> `POST /api/route/sketch` through main's `requestJson` -> the answer (`narration_ko` / `question_ko`) is the HUD transcript line; the
+strokes stay visible, faded, until a `route_plan` arrives (then the planned route replaces them). An `execute` answer without a route is shown as
+`invalid`, never as executing.
+
+- **Chord detection**: `native/chord_helper.swift` (listen-only `CGEventTap`, never posts events, never touches the cursor; build with
+  `sh electron/native/build.sh` -> `native/bin/chord_helper`) writes `{"chord":"down"|"up"}`, `{"key":"other"}`, `{"status":"ready"|"denied"}` lines.
+  `sketch/helper.js` supervises it (restart with backoff, crash-loop stop, slow retry while denied, "lost" -> cancel); `sketch/chord.js` is the pure state
+  machine (120 ms debounce, interruption by another key, toggle takeover). Needs **Input Monitoring**; without it (or without the build) settings > 미니맵
+  explains in Korean and the fallback toggle `sketch.fallbackShortcut` (default `Control+Alt+D`, press = start, press again = send, Esc = cancel) works.
+- **Native mouse capture (keeps the game's focus)**: a mouse-down on any Electron window activates our app and steals SC2's keyboard focus (Electron 36's
+  `type:"panel"` is not a real non-activating NSPanel). So while sketching, main sends the helper `{"rect":{x,y,w,h}}` + `{"capture":true}` (stdin, one JSON
+  per line; also for the fallback toggle) and the helper runs an **active** tap on left mouse down/drag/up only: a press that starts inside the minimap rect is
+  reported (`{"mouse":"down"|"drag"|"up","x","y","t"}`) and **consumed** (neither SC2 nor our windows see it); everything outside the rect passes through untouched.
+  It never posts events or moves the cursor. The sketch window stays click-through and renders strokes built from those messages (`sketch/native_capture.js`).
+  Needs **Accessibility**; without it (or without the helper) the Electron panel takes the mouse for that sketch and settings > 미니맵 > 손쉬운 사용 says
+  "손쉬운 사용 권한이 없어 그리는 동안 게임 포커스가 잠깐 넘어갈 수 있습니다" with how to grant it.
+- **Screen capture**: `desktopCapturer` + Screen Recording permission. Without it the image is `null` and settings says so; a black capture is never sent.
+- **Minimap position** (assumption, live SC2 unverified): default guess = square at the bottom-left of the display, side 24.5 % of the display height,
+  1 % margin (`sketch/geometry.js`). 설정 > 미니맵 > 위치 맞추기 opens a drag/resize overlay; the rect is stored per display id + resolution + scale factor
+  (`userData/minimap.json`). Strokes are normalized to the minimap FRAME only; the letterboxed playable area is the backend's job.
+- **Route display + agent cursor**: route events come from `GET /api/route/events?after=<route_seq>` (`sketch/feed.js`): `route_plan` -> dashed polyline,
+  numbered waypoints, sword (attack) / flag (move) at the end; `route_progress` -> reached markers (final point reached only on `done:true`), fade on
+  `done`/`released`; `agent_cursor` -> a ghost cursor (distinct shape/colour, `label_ko` tooltip) gliding to each point. It is a DOM element in the sketch window; **no code
+  in the app moves, warps or posts to the real pointer** (`test/sketch_no_cursor_warp.test.js` scans every shipped source; only `electron/smoke` may).
+- **HUD**: the route is one more operation card on the tactical board (`sketch/route_model.js` `card()`; stages move only on backend events; 시뮬 for the fake bot)
+  whose name is the progress text `앞마당 ✓ → 맵 중앙 (이동 중) → 적 3번째 → 공격`.
+- **Smoke**: `npx electron smoke/route_shots.js [outDir]` headless render of both skins (no pointer). `npx electron smoke/sketch_probe.js` is the supervisor's
+  real-pointer probe (simulated chord -> real helper -> real OS drag; a downstream witness tap proves inside presses are consumed and outside clicks pass; the frontmost app is sampled every 100 ms); it refuses to run when `CGSSessionScreenIsLocked` is 1 (two S), the console is locked or the capture is dark.
+
 ## Design language (Apple HIG + Aside tokens)
 
 `renderer/tokens.css` is the single token layer shared by the HUD (`style.css`) and the tactical board (`board/board.css`): corner scale

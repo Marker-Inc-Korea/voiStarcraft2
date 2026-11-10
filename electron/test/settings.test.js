@@ -5,12 +5,13 @@ const I = require("../renderer/i18n.js");
 
 test("defaults cover every group and match the documented values", () => {
   const d = S.defaults();
-  assert.deepEqual(Object.keys(d).sort(), ["board", "emergency", "glass", "layout", "rainbow", "server", "voice"]);
+  assert.deepEqual(Object.keys(d).sort(), ["board", "emergency", "glass", "layout", "rainbow", "server", "sketch", "voice"]);
   assert.equal(d.glass.alpha, 0.28); assert.equal(d.glass.blur, 12); assert.equal(d.glass.vibrancy, false);
   assert.equal(d.layout.dock, "bottom"); assert.equal(d.layout.autoHide, true); assert.equal(d.layout.hideDelay, 600); assert.equal(d.layout.zone, 2); assert.equal(d.layout.display, "cursor");
   assert.equal(d.rainbow.enabled, true); assert.equal(d.rainbow.depth, 90);
   assert.equal(d.voice.silence, 450); assert.equal(d.voice.mode, "always"); assert.equal(d.voice.shortcut, "CommandOrControl+Shift+Space"); assert.equal(d.voice.language, "ko");
   assert.equal(d.server.url, "http://127.0.0.1:8765");
+  assert.deepEqual(d.sketch, { enabled: true, fallbackShortcut: "Control+Alt+D", captureImage: true });
   assert.equal(S.defaults({ serverUrl: "http://localhost:9000" }).server.url, "http://localhost:9000");
   assert.equal(S.defaults({ serverUrl: "https://evil.example" }).server.url, "http://127.0.0.1:8765");
 });

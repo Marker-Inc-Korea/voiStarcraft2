@@ -184,11 +184,19 @@ class DemoUnit:
     def gather(self, target: object) -> tuple[str, str, object]:
         return self._record("gather", target)
 
-    def move(self, point: object) -> tuple[str, str, object]:
-        return self._record("move", point)
+    @property
+    def type_id(self) -> SimpleNamespace:
+        """python-sc2 ``UnitTypeId``-like name (``Marine`` -> ``MARINE``)."""
 
-    def attack(self, point: object) -> tuple[str, str, object]:
-        return self._record("attack", point)
+        return SimpleNamespace(name=self.name.upper())
+
+    def move(self, point: object, queue: bool = False) -> tuple[str, str, object]:
+        self.issued_orders.append(("move", point, bool(queue)))
+        return ("move", self.name, point)
+
+    def attack(self, point: object, queue: bool = False) -> tuple[str, str, object]:
+        self.issued_orders.append(("attack", point, bool(queue)))
+        return ("attack", self.name, point)
 
     def repair(self, target: object) -> tuple[str, str, object]:
         return self._record("repair", target)
@@ -237,7 +245,10 @@ class DemoFakeBotAI:
             map_ramps=(
                 SimpleNamespace(top_center=DemoPoint(38.0, 36.0)),
                 SimpleNamespace(top_center=DemoPoint(122.0, 124.0)),
-            )
+            ),
+            # Route sketches map the minimap onto this area (route_execution.world_from_bot).
+            playable_area=SimpleNamespace(x=4.0, y=4.0, width=152.0, height=152.0),
+            map_size=SimpleNamespace(x=160.0, y=160.0),
         )
         self.expansion_locations_list = [
             DemoPoint(30.0, 30.0),
@@ -313,6 +324,13 @@ class DemoFakeBotAI:
         """Affordability stays scripted-true; the validator gates real costs."""
 
         return True
+
+    def in_pathing_grid(self, point: object) -> bool:
+        """The demo map is open ground inside the playable area (no cliffs are scripted)."""
+
+        area = self.game_info.playable_area
+        x, y = float(getattr(point, "x", 0.0)), float(getattr(point, "y", 0.0))
+        return area.x <= x <= area.x + area.width and area.y <= y <= area.y + area.height
 
     def do(self, command: object) -> None:
         self.issued_commands.append(command)
