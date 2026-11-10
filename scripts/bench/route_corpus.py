@@ -209,6 +209,10 @@ def _row(cid, cat, sc: Scene, strokes, transcript, gold) -> dict:
     gold.setdefault("final", None)
     gold.setdefault("squad", None)
     gold.setdefault("avoid", [])
+    # the squad is only implied (the path starts on it, nothing says or circles which units): a product that ASKS "which
+    # squad?" is also safe there; scored as kind_ok_lenient next to the strict kind accuracy
+    roles = gold.get("roles", [])
+    gold["squad_implicit"] = bool(gold["squad"]) and not any(r.startswith("squad_circle") for r in roles) and cat != "transcript_squad"
     return {"id": cid, "category": cat, "seed": sc.seed, "world": sc.world.to_dict(), "info": sc.info,
             "request": _request(sc, cid, strokes, transcript), "gold": gold}
 

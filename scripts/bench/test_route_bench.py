@@ -215,3 +215,22 @@ def test_aggregate_by_category_latency_and_selection_rule():
     assert RS.choose({"u": {**base, "unsafe": 2}})[0] is None
     far = {"best": base, "weak": {**base, "kind_acc": 0.8, "latency_p50_ms": 10}}
     assert RS.choose(far)[0] == "best"
+
+
+def test_asking_which_squad_is_lenient_only_on_implicit_squad_rows():
+    row = _row()
+    row["gold"]["squad_implicit"] = True
+    s = RS.score_row(row, {"kind": "ask", "waypoints": [], "final": None, "squad": None})
+    assert not s["kind_ok"] and s["kind_ok_lenient"] and not s["unsafe"]
+    row["gold"]["squad_implicit"] = False
+    assert not RS.score_row(row, {"kind": "ask"})["kind_ok_lenient"]
+    agg = RS.aggregate([RS.score_row(_row(), {"kind": "ask"})])["all"]
+    assert agg["kind_acc"] == 0.0
+
+
+def test_corpus_marks_implicit_squads():
+    rows = {r["id"]: r for r in RC.load_rows()}
+    assert rows["rt-move-000"]["gold"]["squad_implicit"] is True
+    assert rows["rt-squad-000"]["gold"]["squad_implicit"] is False  # circled
+    assert rows["rt-tsquad-000"]["gold"]["squad_implicit"] is False  # named in the transcript
+    assert all(not r["gold"]["squad_implicit"] for r in rows.values() if r["gold"]["kind"] != "execute")

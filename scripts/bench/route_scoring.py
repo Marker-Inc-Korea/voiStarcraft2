@@ -9,7 +9,8 @@ A prediction is the RouteDecision of the shared contract flattened to world unit
 A row without a prediction, or with ``error`` set, or with an unknown kind is UNANSWERED (and counts as a miss, not as unsafe).
 
 Metrics (per category and overall)
-  kind_acc        kind == gold kind (strict); safe_nonexec = gold is ask/refuse/none and the prediction did not execute
+  kind_acc        kind == gold kind (strict); kind_acc_lenient also accepts ``ask`` on rows whose squad is only implied by where
+                  the path starts (gold.squad_implicit: nothing said or circled which units); safe_nonexec = gold is ask/refuse/none and the prediction did not execute
   wp_mean/p95     error in world units between each GOLD route point (bend corners + final) and the predicted route, with an
                   order-preserving assignment: gold point j is matched to predicted point k_j with k_1 <= k_2 <= ... chosen
                   to minimise the summed distance (DP).  Pooled over gold-execute rows where the prediction executed.
@@ -145,11 +146,12 @@ def score_row(row: dict, pred: dict | None) -> dict:
     geom = Geometry(*row["world"]["playable"])
     s = {"id": row["id"], "category": row["category"], "gold_kind": gold["kind"], "answered": answered(pred)}
     if not s["answered"]:
-        s.update(pred_kind=None, kind_ok=False, unsafe=False, unsafe_reason=None, safe_nonexec=False)
+        s.update(pred_kind=None, kind_ok=False, kind_ok_lenient=False, unsafe=False, unsafe_reason=None, safe_nonexec=False)
         return s
     kind = pred["kind"]
     s["pred_kind"] = kind
     s["kind_ok"] = kind == gold["kind"]
+    s["kind_ok_lenient"] = s["kind_ok"] or (kind == "ask" and bool(gold.get("squad_implicit")))
     executed = kind == "execute"
     s["safe_nonexec"] = gold["kind"] != "execute" and not executed
     s["latency_ms"] = pred.get("latency_ms")
@@ -207,6 +209,8 @@ def aggregate_group(scores: list[dict]) -> dict:
     return {
         "n": n, "n_exec_gold": len(ex),
         "kind_acc": _rate(sum(s["kind_ok"] for s in scores), n),
+        "kind_acc_lenient": _rate(sum(s["kind_ok_lenient"] for s in scores), n),
+        "asked_implicit_squad": sum(1 for s in scores if s.get("pred_kind") == "ask" and s["kind_ok_lenient"] and not s["kind_ok"]),
         "safe_nonexec": _rate(sum(s["safe_nonexec"] for s in non), len(non)),
         "wp_mean": round(sum(errs) / len(errs), 2) if errs else None, "wp_p95": pct(errs, 0.95), "wp_n": len(errs),
         "order_ok": _rate(sum(bool(s["order_ok"]) for s in ordered), len(ordered)), "order_n": len(ordered),
