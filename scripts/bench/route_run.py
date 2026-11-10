@@ -255,6 +255,30 @@ def category_table(name: str, v: dict) -> str:
     return "\n".join(lines)
 
 
+def md_tables(res: dict[str, dict]) -> str:
+    """Markdown for docs/voice-intent-benchmark.md R6: main table + per-category tables, from the committed result files."""
+
+    cols = [("n", "n"), ("kind_acc", "kind acc"), ("kind_acc_lenient", "kind acc (lenient)"), ("unsafe", "unsafe"), ("unanswered", "unanswered"),
+            ("wp_mean", "wp mean (wu)"), ("wp_p95", "wp p95 (wu)"), ("order_ok", "order ok"), ("action_ok", "action ok"), ("squad_ok", "squad ok"),
+            ("latency_p50_ms", "p50 ms"), ("latency_p95_ms", "p95 ms"), ("tokens_mean", "tokens")]
+    out = ["| variant | " + " | ".join(c[1] for c in cols) + " |", "|---|" + "---|" * len(cols)]
+    for name, v in res.items():
+        a = v["aggregate"]["all"]
+        out.append(f"| {name} | " + " | ".join(fmt(a[k], 2 if k.startswith(("wp", "lat", "tok")) else 3) for k, _ in cols) + " |")
+    out.append("")
+    cats = list(next(iter(res.values()))["aggregate"])
+    for metric, label in (("kind_acc", "kind accuracy"), ("unsafe", "unsafe count"), ("wp_p95", "waypoint p95 error (world units)")):
+        out.append(f"{label} by category (n = rows x 2 reps):")
+        out.append("")
+        out.append("| category | n | " + " | ".join(res) + " |")
+        out.append("|---|---|" + "---|" * len(res))
+        for c in cats:
+            n = next(iter(res.values()))["aggregate"][c]["n"]
+            out.append(f"| {c} | {n} | " + " | ".join(fmt(v["aggregate"][c][metric], 3 if metric == "kind_acc" else 2) for v in res.values()) + " |")
+        out.append("")
+    return "\n".join(out)
+
+
 def load_results() -> dict[str, dict]:
     out = {}
     for p in sorted(RESULTS.glob("route_*.json")):
@@ -283,7 +307,7 @@ def probe(models: list[str]) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["run", "report", "probe"])
+    ap.add_argument("cmd", choices=["run", "report", "probe", "md"])
     ap.add_argument("--models", nargs="*", default=MODELS + ["none"], help="proxy model ids and/or 'none' (deterministic fallback)")
     ap.add_argument("--reps", type=int, default=2)
     ap.add_argument("--concurrency", type=int, default=6)
@@ -292,6 +316,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "probe":
         return probe([m for m in a.models if m != "none"])
+    if a.cmd == "md":
+        print(md_tables(load_results()))
+        return 0
     if a.cmd == "report":
         res = load_results()
         print(table(res))
