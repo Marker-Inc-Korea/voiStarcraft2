@@ -213,10 +213,14 @@ def make_world(seed: int, *, n_clusters: int = 1, squad_sizes: tuple[int, ...] |
     clusters = []
     sizes = squad_sizes or tuple(rint(rng, 5, 10) for _ in range(n_clusters))
     spots = [_frac_point(box, own_f[0] + (0.5 - own_f[0]) * 0.55, own_f[1] + (0.5 - own_f[1]) * 0.55)]
-    for k in range(1, len(sizes)):  # second / third squad: clearly separated from the first
-        a = own_main
-        spots.append((a[0] + (center[0] - a[0]) * 0.1 + (22 if k % 2 else -22) * (1 if own_main[0] < center[0] else -1),
-                      a[1] + (center[1] - a[1]) * 0.95 - (14 if k % 2 else -14) * (1 if own_main[1] < center[1] else -1)))
+    for k in range(1, len(sizes)):  # further squads: >= 26 world units from every earlier one (a circle around one never holds another)
+        for _ in range(400):
+            ang, rad = rng.uniform(0, 2 * math.pi), rng.uniform(26.0, 36.0)
+            cand = (spots[0][0] + rad * math.cos(ang), spots[0][1] + rad * math.sin(ang))
+            if box[0] + 8 <= cand[0] <= box[2] - 8 and box[1] + 8 <= cand[1] <= box[3] - 8 and all(dist(cand, o) >= 26.0 for o in spots) \
+                    and all(world.pathable(cand[0] + 5 * math.cos(a), cand[1] + 5 * math.sin(a)) for a in (0, 1.57, 3.14, 4.71)) and world.pathable(*cand):
+                break
+        spots.append(cand)
     type_mixes = [["MARINE"] * 6 + ["MARAUDER"] * 2 + ["MEDIVAC"] * 2, ["SIEGETANK"] * 3 + ["MARINE"] * 3, ["HELLION"] * 4 + ["CYCLONE"] * 2,
                   ["MARINE"] * 8]
     for k, n in enumerate(sizes):

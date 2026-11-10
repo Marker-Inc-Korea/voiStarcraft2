@@ -235,3 +235,15 @@ def test_corpus_marks_implicit_squads():
     assert rows["rt-squad-000"]["gold"]["squad_implicit"] is False  # circled
     assert rows["rt-tsquad-000"]["gold"]["squad_implicit"] is False  # named in the transcript
     assert all(not r["gold"]["squad_implicit"] for r in rows.values() if r["gold"]["kind"] != "execute")
+
+
+def test_squad_circle_rows_circle_exactly_the_gold_squad():
+    for r in RC.load_rows():
+        if r["category"] != "squad_circle_path":
+            continue
+        c = r["info"]["clusters"]
+        assert RW.dist(c[0]["center"], c[1]["center"]) >= 20.0, r["id"]
+        geom = RW.Geometry(*r["world"]["playable"])
+        ring = RS.strokes_world(geom, r["request"]["strokes"])[0]
+        inside = {u[1] for u in r["world"]["own_units"] if RW.point_in_poly((u[2], u[3]), ring)}
+        assert inside == set(r["gold"]["squad"]["tags"]), r["id"]
