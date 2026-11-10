@@ -23,7 +23,7 @@ class FakeWin extends EventEmitter {
 function rig(over = {}) {
   let t = 1000;
   const timers = [];
-  const wins = [], posts = [], hud = [], globals = new Map(), fsWrites = {};
+  const wins = [], posts = [], hud = [], globals = new Map(), fsWrites = {}, stdin = [];
   const settings = JSON.parse(JSON.stringify(SETTINGS));
   const ctl = createSketchController({
     BrowserWindow: class extends FakeWin { constructor(o) { super(o); wins.push(this); } },
@@ -31,7 +31,7 @@ function rig(over = {}) {
     requestJson: async (url, opts) => { if (over.failPost && url === "/api/route/sketch") throw new Error("Commander HTTP 500"); posts.push([url, opts && opts.body ? JSON.parse(opts.body) : null]); if (url.startsWith("/api/route/events")) return { events: [], latest: 0 }; return over.answer || { kind: "none", plan_id: "p", narration_ko: "알아볼 수 없습니다", question_ko: null, route: null, squad: null }; },
     pushHud: m => hud.push(m), registerGlobal: (a, cb) => { globals.set(a, cb); return true; }, unregisterGlobal: a => globals.delete(a),
     captureDeps: () => ({ getAccess: () => over.access || "denied", getSources: async () => [] }),
-    spawn: () => { const p = new EventEmitter(); p.stdout = new EventEmitter(); p.kill = () => {}; wins.proc = p; return p; },
+    spawn: () => { const p = new EventEmitter(); p.stdout = new EventEmitter(); p.kill = () => {}; if (over.native) p.stdin = { write: line => { stdin.push(line); return true; }, on() {} }; wins.proc = p; return p; },
     helperPath: "/x/chord_helper", storeFile: "/tmp/none/sketch.json", fs: { mkdirSync() {}, writeFileSync: (f, d) => { fsWrites[f] = d; }, readFileSync: () => { throw new Error("none"); } },
     windowFile: "/x/index.html", preloadFile: "/x/preload.js", now: () => t,
     setTimer: (fn, ms) => { const timer = { fn, at: t + ms, live: true }; timers.push(timer); return timer; }, clearTimer: timer => { if (timer) timer.live = false; },
@@ -41,7 +41,8 @@ function rig(over = {}) {
   const flush = async () => { for (let i = 0; i < 10; i++) await advance(1); };
   // the renderer answers `collect` with its strokes
   const answerCollect = strokes => { const w = wins[0]; const orig = w.webContents.send; w.webContents.send = (c, p) => { orig(c, p); if (c === CHANNELS.collect) setImmediate(() => ctl.handleStrokes({ strokes })); }; };
-  return { ctl, wins, posts, hud, globals, fsWrites, settings, advance, flush, answerCollect, now: () => t };
+  const helperSays = lines => wins.proc.stdout.emit("data", Buffer.from(lines.map(l => JSON.stringify(l)).join("\n") + "\n"));
+  return { ctl, wins, posts, hud, globals, fsWrites, settings, advance, flush, answerCollect, stdin, helperSays, now: () => t };
 }
 const drawOnce = async (r, strokes = [STROKE]) => {
   r.ctl.start(); r.ctl._test.markLoaded();
@@ -174,3 +175,88 @@ test("chords are ignored while calibrating", async () => {
   r.ctl._test.machine.chord("down"); await r.advance(200);
   assert.equal(r.ctl._test.state().drawing, false);
 });
+
+// ---- native mouse capture (the helper owns the mouse while sketching; the window stays click-through) ----
+const native = async (over = {}) => { const r = rig({ native: true, ...over }); r.ctl.start(); r.ctl._test.markLoaded(); r.helperSays([{ status: "ready" }, { accessibility: true }]); return r; };
+const lastStep = r => r.wins[0].sentTo("sketch:native-step").pop();
+
+test("native: chord down sends the minimap rect then capture:true to the helper; the window stays click-through the whole time", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200);
+  const rect = r.ctl.statusSnapshot().calibration.rect;
+  assert.deepEqual(r.stdin, [`{"rect":{"x":${rect.x},"y":${rect.y},"w":${rect.w},"h":${rect.h}}}\n`, '{"capture":true}\n']);
+  assert.equal(r.wins[0].ignore, true, "never takes the mouse: a click on our window would activate the app and steal focus from SC2");
+  r.helperSays([{ capture: "on" }]);
+  assert.equal(r.wins[0].ignore, true); assert.equal(r.ctl.statusSnapshot().captureMode, "native");
+});
+test("native: helper mouse events become frame-normalized steps for the window; events outside the rect never begin a stroke", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200); r.helperSays([{ capture: "on" }]);
+  const rect = r.ctl.statusSnapshot().calibration.rect;
+  const at = (nx, ny) => ({ x: rect.x + nx * rect.w, y: rect.y + ny * rect.h });
+  r.helperSays([{ mouse: "down", ...at(0.2, 0.8), t: 1000 }, { mouse: "drag", ...at(0.5, 0.5), t: 1100 }, { mouse: "up", ...at(0.9, 0.1), t: 1200 }]);
+  assert.deepEqual(r.wins[0].sentTo("sketch:native-step").map(s => [s.step, s.nx, s.ny]), [["begin", 0.2, 0.8], ["move", 0.5, 0.5], ["end", 0.9, 0.1]]);
+  const outside = await native();
+  outside.ctl._test.machine.chord("down"); await outside.advance(200); outside.helperSays([{ capture: "on" }, { mouse: "down", x: 5, y: 5, t: 1 }]);
+  assert.equal(outside.wins[0].sentTo("sketch:native-step").length, 0);
+});
+test("native: release sends capture:false, then the strokes the window collected are POSTed", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200); r.helperSays([{ capture: "on" }]);
+  r.answerCollect([STROKE]);
+  r.ctl._test.machine.chord("up"); await r.flush();
+  assert.equal(r.stdin.pop(), '{"capture":false}\n');
+  assert.equal(r.posts.filter(p => p[0] === "/api/route/sketch").length, 1);
+  assert.equal(r.wins[0].ignore, true);
+});
+test("native: a cancel also releases the helper capture (nothing is POSTed)", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200); r.helperSays([{ capture: "on" }]);
+  r.ctl._test.machine.interrupt(); r.ctl._test.machine.chord("up"); await r.flush();
+  assert.equal(r.stdin.pop(), '{"capture":false}\n'); assert.equal(r.posts.filter(p => p[0] === "/api/route/sketch").length, 0);
+});
+test("native: the fallback toggle uses the same capture path", async () => {
+  const r = await native();
+  r.globals.get("Control+Alt+D")();
+  assert.equal(r.stdin[r.stdin.length - 1], '{"capture":true}\n');
+  r.answerCollect([STROKE]); r.globals.get("Control+Alt+D")(); await r.flush();
+  assert.equal(r.stdin.pop(), '{"capture":false}\n');
+});
+test("native: mouse events after the sketch ended (a draining release) are ignored", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200); r.helperSays([{ capture: "on" }]);
+  r.answerCollect([]); r.ctl._test.machine.chord("up"); await r.flush();
+  const before = r.wins[0].sentTo("sketch:native-step").length;
+  r.helperSays([{ mouse: "up", x: 1, y: 1, t: 5 }, { capture: "off" }]);
+  assert.equal(r.wins[0].sentTo("sketch:native-step").length, before);
+});
+test("fallback: helper says capture unavailable (no Accessibility) -> the Electron panel takes the mouse for this sketch", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200);
+  assert.equal(r.wins[0].ignore, true, "pending: still click-through");
+  r.helperSays([{ accessibility: false }, { capture: "unavailable" }]);
+  assert.equal(r.wins[0].ignore, false); assert.equal(r.ctl.statusSnapshot().captureMode, "fallback");
+  r.ctl._test.machine.chord("up"); await r.flush();
+  assert.equal(r.wins[0].ignore, true);
+});
+test("fallback: accessibility already known to be missing -> straight to the panel (no capture request)", async () => {
+  const r = rig({ native: true }); r.ctl.start(); r.ctl._test.markLoaded(); r.helperSays([{ status: "ready" }, { accessibility: false }]);
+  r.ctl._test.machine.chord("down"); await r.advance(200);
+  assert.equal(r.wins[0].ignore, false); assert.ok(!r.stdin.some(l => l.includes('"capture":true')));
+  const snap = r.ctl.statusSnapshot();
+  assert.equal(snap.accessibility.granted, false); assert.match(snap.accessibility.text, /손쉬운 사용 권한이 없어 그리는 동안 게임 포커스가 잠깐 넘어갈 수 있습니다/);
+  assert.match(snap.accessibility.how, /손쉬운 사용/);
+});
+test("fallback: a helper that is not running at all (stdin missing / not built) uses the panel", async () => {
+  const r = rig(); r.ctl.start(); r.ctl._test.markLoaded();
+  r.ctl._test.machine.chord("down"); await r.advance(200);
+  assert.equal(r.wins[0].ignore, false); assert.equal(r.ctl.statusSnapshot().captureMode, "fallback");
+});
+test("native: the helper dying mid-sketch cancels and never leaves the window grabbing", async () => {
+  const r = await native();
+  r.ctl._test.machine.chord("down"); await r.advance(200); r.helperSays([{ capture: "on" }]);
+  wins_exit(r);
+  await r.flush();
+  assert.equal(r.posts.filter(p => p[0] === "/api/route/sketch").length, 0); assert.equal(r.wins[0].ignore, true);
+});
+function wins_exit(r) { r.wins.proc.emit("exit", 1, null); }
