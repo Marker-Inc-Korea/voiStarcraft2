@@ -23,7 +23,15 @@ function meanBrightnessBGRA(bitmap, step = 16) {
   return n ? sum / n : 0;
 }
 
-function evaluate({ locked, brightness }) {
+// `smoke/session_state.swift` prints `CGSSessionScreenIsLocked=1|0|absent` (the CoreGraphics session key, spelled with TWO S; it only exists while locked).
+function parseCGSLocked(text) {
+  const match = /CGSSessionScreenIsLocked=(1|0|absent)/.exec(String(text));
+  if (!match) return null;
+  return match[1] === "1";
+}
+
+function evaluate({ locked, cgsLocked, brightness }) {
+  if (cgsLocked === true) return { ok: false, reason: "screen locked (CGSSessionScreenIsLocked = 1)" };
   if (locked === true) return { ok: false, reason: "screen locked (IOConsoleLocked = Yes)" };
   if (typeof brightness === "number" && brightness <= MIN_BRIGHTNESS) return { ok: false, reason: `screen dark (mean brightness ${brightness.toFixed(2)} <= ${MIN_BRIGHTNESS})` };
   return { ok: true, reason: "" };
@@ -31,6 +39,15 @@ function evaluate({ locked, brightness }) {
 
 function readConsoleLocked() {
   try { return parseConsoleLocked(execFileSync("ioreg", ["-n", "Root", "-d1"], { encoding: "utf8", timeout: 5000 })); } catch { return null; }
+}
+
+const SESSION_STATE = process.env.SESSION_STATE || "/tmp/voi_session_state";
+// Builds the tiny CoreGraphics reader on demand (swiftc is part of the Xcode CLT the other smoke helpers already need).
+function readCGSLocked() {
+  try {
+    if (!fs.existsSync(SESSION_STATE)) execFileSync("swiftc", ["-O", path.join(__dirname, "session_state.swift"), "-o", SESSION_STATE], { timeout: 120000, stdio: "ignore" });
+    return parseCGSLocked(execFileSync(SESSION_STATE, [], { encoding: "utf8", timeout: 5000 }));
+  } catch { return null; }
 }
 
 function readBrightness(nativeImage) {
@@ -45,7 +62,7 @@ function readBrightness(nativeImage) {
 // Returns {ok, reason}. Non-darwin and SMOKE_SKIP_GUARD=1 are never blocked.
 function checkSession(nativeImage) {
   if (process.platform !== "darwin" || process.env.SMOKE_SKIP_GUARD === "1") return { ok: true, reason: "" };
-  return evaluate({ locked: readConsoleLocked(), brightness: readBrightness(nativeImage) });
+  return evaluate({ locked: readConsoleLocked(), cgsLocked: readCGSLocked(), brightness: readBrightness(nativeImage) });
 }
 
 // Prints the BLOCKED line and returns true when the caller must stop (and exit with code 2).
@@ -56,4 +73,4 @@ function isBlocked(nativeImage) {
   return true;
 }
 
-module.exports = { MIN_BRIGHTNESS, parseConsoleLocked, meanBrightnessBGRA, evaluate, checkSession, isBlocked };
+module.exports = { MIN_BRIGHTNESS, parseConsoleLocked, parseCGSLocked, meanBrightnessBGRA, evaluate, checkSession, isBlocked };
