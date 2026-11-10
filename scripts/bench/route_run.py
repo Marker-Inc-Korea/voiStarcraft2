@@ -286,6 +286,7 @@ def main(argv=None) -> int:
             print()
             print(category_table(k, v))
         print()
+        print("n per category:", {c: a["n"] for c, a in next(iter(res.values()))["aggregate"].items()})
         print("uptime per run:", {k: v["meta"]["uptime"].split("load averages:")[-1].strip() for k, v in res.items()})
         chosen, trace = RS.choose({k: v["aggregate"]["all"] for k, v in res.items()})
         print("\n".join(trace))
