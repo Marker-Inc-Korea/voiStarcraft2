@@ -95,6 +95,7 @@ def test_from_env_default_model_and_missing_key(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     assert route_vlm.reader_from_env({}) is None
     reader = route_vlm.reader_from_env({"MYPROXY_API_KEY": "k"})
-    assert reader.model == "gemini-3-flash" and reader.base_url == "https://proxy.nomadamas.org/v1"
+    assert reader.model == route_vlm.DEFAULT_MODEL == "gemini-3.8-flash-high"
+    assert reader.base_url == "https://proxy.nomadamas.org/v1"
     reader = route_vlm.reader_from_env({"MYPROXY_API_KEY": "k", "VOI_ROUTE_VLM_MODEL": "gpt-5.4-mini"})
     assert reader.model == "gpt-5.4-mini"

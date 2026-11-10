@@ -48,7 +48,8 @@ published on the SSE journal `/api/events` with `event_type` = kind. Every event
 1. Reject raw-control/injection transcripts (`realtime_intent.transcript_is_raw_control_or_injection`).
 2. Drop noise strokes (< 0.03 frame units long).
 3. Semantics: injected `VlmReader` (default `route_vlm.ProxyVlmReader`, proxy OpenAI-compatible chat + image part,
-   `VOI_ROUTE_VLM_MODEL`, default `gemini-3-flash`, 20 s timeout) or the deterministic fallback when no key is set
+   `VOI_ROUTE_VLM_MODEL`, default `gemini-3.8-flash-high` chosen by the R6 benchmark (kind accuracy 0.899, unsafe 0, p50 5.8 s /
+   p95 11.5 s at load ~13; `gemini-3-flash` is the faster fallback: 0.794, unsafe 0, p50 3.5 s), 20 s timeout) or the deterministic fallback when no key is set
    (one open stroke = move route; open stroke ending in a closed stroke around visible enemies = attack; anything else
    asks). The VLM decides roles (path/target/avoid/squad_select/noise), path order/direction, move vs attack and the
    squad source - never coordinates; any `nx/ny/x/y` it emits must lie within 0.02 of a stroke or the decision is `refuse`.

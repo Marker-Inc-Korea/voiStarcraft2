@@ -19,7 +19,8 @@ from collections.abc import Callable, Mapping
 
 from starcraft_commander import realtime_intent
 
-DEFAULT_MODEL = "gemini-3-flash"
+# Chosen by the R6 benchmark (docs/voice-intent-benchmark.md, route code c38f961): highest kind accuracy with unsafe 0.
+DEFAULT_MODEL = "gemini-3.8-flash-high"
 DEFAULT_TIMEOUT_SECONDS = 20.0
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
