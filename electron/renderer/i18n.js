@@ -14,7 +14,7 @@
     // reasons (one word each)
     r_resource: "자원부족", r_units: "병력부족", r_prereq: "선행필요", r_conflict: "충돌", r_refused: "거절", r_clarify: "확인필요", r_expired: "만료", r_timeout: "시간초과", r_failed: "실패", r_unknown: "막힘",
     // settings: tabs
-    tab_glass: "유리", tab_layout: "레이아웃", tab_rainbow: "무지개", tab_voice: "음성", tab_emergency: "긴급", tab_server: "서버", tab_reset: "초기화",
+    tab_glass: "유리", tab_layout: "레이아웃", tab_rainbow: "무지개", tab_voice: "음성", tab_emergency: "긴급", tab_server: "서버", tab_reset: "초기화", tab_sketch: "미니맵",
     // glass
     glass_skin: "스킨", skin_cosmic: "우주", skin_terminal: "터미널", glass_slant: "기울기", emergency_retreat: "후퇴 키", emergency_hold: "홀드 키", emergency_stop: "멈춰 키",
     glass_alpha: "투명도", glass_blur: "블러", glass_vibrancy: "네이티브 블러", glass_hue: "색조", glass_saturation: "채도", glass_borderGlow: "테두리 빛", glass_radius: "모서리", glass_stars: "별", glass_starSpeed: "별 속도", glass_nebula: "성운", glass_twinkle: "반짝임", glass_meteors: "유성", glass_textSize: "글자 크기", glass_reduceMotion: "모션 줄임",
@@ -31,6 +31,8 @@
     server_url: "주소", server_status: "상태", connected: "연결됨", disconnected: "끊김", checking: "확인중", apply: "적용",
     // BOARD (tactical board window)
     tab_board: "전술판", board_enabled: "사용", board_anchor: "위치", board_pageSize: "한 쪽 카드", board_width: "너비", board_autoAdvanceSec: "자동 넘김", board_offsetX: "가로 여백", board_offsetY: "세로 여백", board_hideWhenEmpty: "비면 숨김", board_ageOutSec: "종료 후 숨김", board_opacity: "투명도", board_pageUpShortcut: "이전 쪽 키", board_pageDownShortcut: "다음 쪽 키", anchor_upperleft: "좌상단", anchor_left: "왼쪽",
+    // minimap sketch
+    sketch_enabled: "그리기", sketch_fallbackShortcut: "대체 키", sketch_captureImage: "이미지 전송", sketch_helper: "키 감지", sketch_capture: "화면 기록", sketch_position: "미니맵 위치", fit: "위치 맞추기", fitReset: "기본값", retry: "다시 시도",
     // reset
     reset_all: "전체", confirm: "확인", on: "켜짐",
   };
@@ -40,7 +42,7 @@
     tier_macro: "Macro", tier_operation: "Operation", tier_micro: "Micro", tier_emergency: "Emergency", tier_unknown: "Sorting",
     sim: "Sim", runtimeUnknown: "Unknown", blocked: "Blocked", ended: "Ended",
     r_resource: "Resources", r_units: "Units", r_prereq: "Prereq", r_conflict: "Conflict", r_refused: "Refused", r_clarify: "Clarify", r_expired: "Expired", r_timeout: "Timeout", r_failed: "Failed", r_unknown: "Blocked",
-    tab_glass: "Glass", tab_layout: "Layout", tab_rainbow: "Rainbow", tab_voice: "Voice", tab_emergency: "Emergency", tab_server: "Server", tab_reset: "Reset",
+    tab_glass: "Glass", tab_layout: "Layout", tab_rainbow: "Rainbow", tab_voice: "Voice", tab_emergency: "Emergency", tab_server: "Server", tab_reset: "Reset", tab_sketch: "Minimap",
     glass_skin: "Skin", skin_cosmic: "Cosmic", skin_terminal: "Terminal", glass_slant: "Slant", emergency_retreat: "Retreat key", emergency_hold: "Hold key", emergency_stop: "Stop key",
     glass_alpha: "Opacity", glass_blur: "Blur", glass_vibrancy: "Native blur", glass_hue: "Hue", glass_saturation: "Saturation", glass_borderGlow: "Border glow", glass_radius: "Corners", glass_stars: "Stars", glass_starSpeed: "Star speed", glass_nebula: "Nebula", glass_twinkle: "Twinkle", glass_meteors: "Meteors", glass_textSize: "Text size", glass_reduceMotion: "Reduce motion",
     layout_dock: "Position", layout_width: "Width", layout_height: "Height", layout_autoHide: "Auto-hide", layout_hideDelay: "Hide delay", layout_zone: "Edge zone", layout_pinned: "Always visible", layout_display: "Display", layout_margin: "Margin",
@@ -52,6 +54,7 @@
     server_url: "URL", server_status: "Status", connected: "Online", disconnected: "Offline", checking: "Checking", apply: "Apply",
     // BOARD (tactical board window)
     tab_board: "Board", board_enabled: "Enabled", board_anchor: "Position", board_pageSize: "Cards per page", board_width: "Width", board_autoAdvanceSec: "Auto page", board_offsetX: "Left offset", board_offsetY: "Top offset", board_hideWhenEmpty: "Hide if empty", board_ageOutSec: "Hide after end", board_opacity: "Opacity", board_pageUpShortcut: "Prev page key", board_pageDownShortcut: "Next page key", anchor_upperleft: "Upper-left", anchor_left: "Left",
+    sketch_enabled: "Draw", sketch_fallbackShortcut: "Fallback key", sketch_captureImage: "Send image", sketch_helper: "Key watcher", sketch_capture: "Screen rec", sketch_position: "Minimap pos", fit: "Fit", fitReset: "Default", retry: "Retry",
     reset_all: "All", confirm: "Confirm", on: "On",
   };
   const tables = { ko, en };

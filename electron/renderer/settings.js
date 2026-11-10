@@ -71,6 +71,13 @@
     server: {
       url: text(64, "http://127.0.0.1:8765"),
     },
+    // Minimap route sketch (electron/sketch/*): hold Control+Option to draw on the SC2 minimap. fallbackShortcut toggles the same
+    // sketch mode when the key helper has no Input Monitoring permission (press once to start drawing, again to send).
+    sketch: {
+      enabled: bool(true),
+      fallbackShortcut: text(48, "Control+Alt+D", ACCELERATOR),
+      captureImage: bool(true),
+    },
     // BOARD: separate tactical board window (electron/board/*). anchor: upper-left | left edge; sizes are DIP.
     board: {
       enabled: bool(true),

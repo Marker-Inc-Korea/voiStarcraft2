@@ -2,7 +2,7 @@
 // Polls GET /api/route/events?after=<route_seq> (route-only twin of the SSE stream; route_seq is its own cursor, independent of
 // /api/history seq) and hands new route events to the caller exactly once, in order. Pure over an injected requestJson.
 const KINDS = new Set(["route_plan", "route_progress", "agent_cursor"]);
-const ACTIVE_MS = 400, IDLE_MS = 1500, MAX_DELAY_MS = 30000;
+const ACTIVE_MS = 400, IDLE_MS = 3000, MAX_DELAY_MS = 30000;
 
 function createRouteFeed({ requestJson, onEvents = () => {}, onReset = () => {} }) {
   let cursor = 0, failed = 0;
